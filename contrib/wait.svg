@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg font-family="DejaVu Sans,sans-serif" width="90px" height="90px" xmlns="http://www.w3.org/2000/svg">
+<circle cx="71" cy="29" r="10" stroke="none" fill="#ffffff">
+  <animate attributeName="fill" values="#ffffff;#e0e0e0;#c0c0c0;#a0a0a0;#808080;#606060;#404040;#202020;#000000" dur="1s" repeatCount="indefinite"/>
+</circle>
+<circle cx="50" cy="20" r="10" stroke="none" fill="#e0e0e0">
+  <animate attributeName="fill" values="#e0e0e0;#c0c0c0;#a0a0a0;#808080;#606060;#404040;#202020;#000000;#ffffff" dur="1s" repeatCount="indefinite"/>
+</circle>
+<circle cx="29" cy="29" r="10" stroke="none" fill="#c0c0c0">
+  <animate attributeName="fill" values="#c0c0c0;#a0a0a0;#808080;#606060;#404040;#202020;#000000;#ffffff;#e0e0e0" dur="1s" repeatCount="indefinite"/>
+</circle>
+<circle cx="20" cy="50" r="10" stroke="none" fill="#a0a0a0">
+  <animate attributeName="fill" values="#a0a0a0;#808080;#606060;#404040;#202020;#000000;#ffffff;#e0e0e0;#c0c0c0" dur="1s" repeatCount="indefinite"/>
+</circle>
+<circle cx="29" cy="71" r="10" stroke="none" fill="#808080">
+  <animate attributeName="fill" values="#808080;#606060;#404040;#202020;#000000;#ffffff;#e0e0e0;#c0c0c0;#a0a0a0" dur="1s" repeatCount="indefinite"/>
+</circle>
+<circle cx="50" cy="80" r="10" stroke="none" fill="#606060">
+  <animate attributeName="fill" values="#606060;#404040;#202020;#000000;#ffffff;#e0e0e0;#c0c0c0;#a0a0a0;#808080" dur="1s" repeatCount="indefinite"/>
+</circle>
+<circle cx="71" cy="71" r="10" stroke="none" fill="#404040">
+  <animate attributeName="fill" values="#404040;#202020;#000000;#ffffff;#e0e0e0;#c0c0c0;#a0a0a0;#808080;#606060" dur="1s" repeatCount="indefinite"/>
+</circle>
+<circle cx="80" cy="50" r="10" stroke="none" fill="#202020">
+  <animate attributeName="fill" values="#202020;#000000;#ffffff;#e0e0e0;#c0c0c0;#a0a0a0;#808080;#606060;#404040" dur="1s" repeatCount="indefinite"/>
+</circle>
+</svg> 

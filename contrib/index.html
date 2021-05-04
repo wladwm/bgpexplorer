@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <title>Routes</title>
+  <meta http-equiv="content-type" content="text/html; charset=utf8">
+  <script type="text/javascript">
+    var cnt_queries_running = 0;
+    class ApiQuery {
+      debounce_timeout = null;
+      xhr = null;
+      is_query_running = false;
+      pending_url = "";
+      on_done = null;
+      on_query_started = null;
+      on_query_finished = null;
+      constructor() {
+        this.xhr = new XMLHttpRequest();
+        this.xhr.onreadystatechange = this.onXhrStateChange.bind(this);
+        this.xhr.onerror = this.onXhrStateError.bind(this);
+        this.xhr.timeout = 10000;
+      }
+      debounce(func, wait) {
+        var context = this, args = arguments;
+        if (this.debounce_timeout) clearTimeout(this.debounce_timeout);
+        let self = this;
+        this.debounce_timeout = setTimeout(function () {
+          self.debounce_timeout = null;
+          func.apply(context, args);
+        }, wait);
+      }
+      onQueryRunning(qstate) {
+        this.is_query_running = qstate;
+        if (qstate) {
+          if (cnt_queries_running == 0) {
+            document.getElementById('inprogress').style.display = 'block';
+            document.getElementById('querybtn').style.enabled = false;
+          }
+          cnt_queries_running++;
+          if (this.on_query_started) this.on_query_started(event);
+        } else {
+          cnt_queries_running--;
+          if (cnt_queries_running == 0) {
+            document.getElementById('inprogress').style.display = 'none';
+            document.getElementById('querybtn').style.enabled = true;
+          }
+          if (this.on_query_finished) this.on_query_finished(event);
+        };
+      }
+      onXhrStateChange(event) {
+        if (event.target.readyState == 4) {
+          this.onQueryRunning(false);
+          if (event.target.status == 0) {
+            //retry
+            this.debounce(() => {
+              this.executeQuery();
+            }, 1000);
+            return;
+          }
+          if (event.target.status == 200) {
+            this.on_done(event);
+          }
+        }
+      }
+      onXhrStateError(event) {
+        this.onQueryRunning(false);
+        console.log("Request error - ", event);
+      }
+      executeQuery() {
+        if (this.query_running) return;
+        if (this.debounce_timeout) clearTimeout(this.debounce_timeout);
+        this.debounce_timeout = null;
+        this.xhr.open('GET', this.pending_url, true);
+        this.xhr.send();
+        this.onQueryRunning(true);
+      }
+      Query(func, url) {
+        if (this.is_query_running)
+          this.xhr.abort();
+        //this.is_query_running=false;
+        this.debounce(() => {
+          this.pending_url = url;
+          this.on_done = func;
+          this.executeQuery();
+        }, 1000);
+      }
+    };
+  </script>
+  <script type="text/javascript">
+    var server_statistics = new Array();
+    var active_rib = "";
+    var pagesize = 100;
+    var skip = 0;
+
+    var queryRib = new ApiQuery();
+    var queryStatistics = new ApiQuery();
+
+    function gopage(n) {
+      skip = n * pagesize;
+      ExecuteQuery();
+    };
+    function Flip(elemname) {
+      let elm = document.getElementById(elemname);
+      if (!elm) return;
+      elm.style.display = (elm.style.display == 'none') ? 'block' : 'none';
+    }
+    function escapeHTML(s) {
+      return ("" + s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    }
+    function escapeIpAddr(ipaddr) {
+      return "<ip-addr val='" + ipaddr + "'></ip-addr>";
+    }
+    function escapeASN(asn) {
+      return "<bgp-as val='" + asn + "'></bgp-as>";
+    }
+    function textAttrs(attr) {
+      let rtxt = '<div>';
+      if ("med" in attr) {
+        rtxt += "MED: " + attr["med"] + ", ";
+      };
+      if ("localpref" in attr) {
+        rtxt += "Localpref: " + attr["localpref"] + ", ";
+      };
+      if ("nexthop" in attr) {
+        rtxt += "from " + escapeIpAddr(attr["nexthop"]);
+      };
+      rtxt += "</div><div>";
+      if ("aspath" in attr) {
+        rtxt += "AS path: " + attr["aspath"].map(escapeASN).join(" ");
+      };
+      if ("origin" in attr) {
+        rtxt += " " + attr["origin"];
+      };
+      if ("communities" in attr || "extcommunities" in attr) {
+        rtxt += "<div>Communities:";
+        if ("communities" in attr) {
+          rtxt += " " + escapeHTML(attr["communities"].join(" "));
+        };
+        if ("extcommunities" in attr) {
+          rtxt += " " + escapeHTML(attr["extcommunities"].join(" "));
+        };
+        rtxt += "</div>";
+      };
+      if ("originator" in attr) {
+        rtxt += "<div>Originator: " + escapeIpAddr(attr["originator"]) + "</div>";
+      };
+      if ("atomicaggregate" in attr) {
+        rtxt += "<div>Atomic aggregate: " + escapeHTML(attr["atomicaggregate"]) + "</div>";
+      };
+      if ("aggregatoras" in attr) {
+        let aa = attr["aggregatoras"];
+        rtxt += "<div>Aggregator: " + escapeIpAddr(aa["addr"]) + " " + escapeASN(aa["asn"]) + "</div>";
+      };
+      if ("clusterlist" in attr) {
+        rtxt += "<div>Cluster list: " + attr["clusterlist"].map(escapeIpAddr).join(" ") + "</div>";
+      };
+      if ("pmsi_tunnel_attributes" in attr) {
+        rtxt += "<div>PMSI tunnel: " + escapeHTML(attr["pmsi_tunnel_attributes"]) + "</div>";
+      }
+      return rtxt;
+    }
+    function showTime(tms) {
+      return ("" + tms).replaceAll("T", " ");
+    }
+    function showRoutes(rtext) {
+      let result = null;
+      let rdiv = document.getElementById('result');
+      try {
+        result = JSON.parse(rtext);
+        document.getElementById('noroutes').style.display = Object.keys(result.items).length > 0 ? 'none' : 'block';
+      } catch (err) {
+        rdiv.innerHTML = '';
+        document.getElementById('noroutes').style.display = 'block';
+        return;
+      }
+      //length,skip,limit
+      let rtxt = '';
+      let lng = parseInt(result['found']);
+      if (lng > pagesize) {
+        rtxt += '<div>' + lng + ': ';
+        let pages = Math.trunc((lng + pagesize - 1) / pagesize);
+        let pageno = Math.trunc(skip / pagesize);
+        const pages_show = 20;
+        let start_page = pageno - (pageno % (pages_show / 2));
+        let pgs = new Array();
+        if (start_page > 0) {
+          pgs.push(0);
+          pgs.push(start_page - 1);
+        }
+        for (i = start_page; i < Math.min(pages, start_page + pages_show); i++) {
+          pgs.push(i);
+        }
+        if ((pages - 1) > start_page + pages_show) {
+          pgs.push(pages - 1);
+        }
+        pgs.forEach((n) => {
+          rtxt += "<button OnClick='gopage(" + n + ")'>" + (n + 1) + "</button> ";
+        });
+        rtxt += '</div>';
+      }
+      rtxt += '<table class="rtbl" cellspacing=2 cellpadding=2 width=100% border=0 style="border-collapse:collapse"><colgroup><col width=100 valign=top><col></colgroup>';
+      let rcnt = 0;
+      Object.keys(result.items).forEach((route) => {
+        let hist = result.items[route];
+        let times = Object.keys(hist).sort((a1, a2) => {
+          if (a1 < a2) return 1;
+          if (a1 > a2) return -1;
+          return 0;
+        });
+        let curtime = times[0];
+        let currec = hist[curtime];
+        let curactive = currec["active"];
+        rtxt += '<tr><td' + (curactive ? '' : ' class=inactive') + '>' + escapeHTML(route) + '</td><td' + (curactive ? '' : ' class=inactive') + '>';
+        rtxt += "<div>" + showTime(curtime) + "</div><div>" + textAttrs(currec["attrs"]) + "</div>";
+        if ("labels" in currec) {
+          rtxt += "<div>Labels: " + currec["labels"] + "</div>";
+        }
+        if (times.length > 1) {
+          rtxt += "<div><button OnClick='Flip(\"hist" + rcnt + "\")'>v</button></div>";
+          rtxt += "<div style='display:none' id='hist" + rcnt + "'><table class=hist>";
+          for (i = 1; i < times.length; i++) {
+            let curtime = times[i];
+            let currec = hist[curtime];
+            let curactive = currec["active"];
+            rtxt += "<tr><td" + (curactive ? '' : ' class=inactive') + ">";
+            rtxt += "<div>" + showTime(curtime) + "</div><div>" + textAttrs(currec["attrs"]) + "</div>";
+            if ("labels" in currec) {
+              rtxt += "<div>Labels: " + currec["labels"] + "</div>";
+            }
+            rtxt += "</td></tr>";
+          }
+          rtxt += "</table></div>";
+        }
+        rtxt += "</td></tr>\n";
+        rcnt++;
+      });
+      rdiv.innerHTML = rtxt + '</table>';
+
+    }
+
+    function ExecuteQuery() {
+      let filterval = document.getElementById('filtertext').value;
+      let url = 'api/json/' + active_rib + '?skip=' + skip + '&limit=' + pagesize + '&filter=' + encodeURI(filterval);
+      queryRib.Query((event) => {
+        try {
+          showRoutes(event.target.responseText);
+        } catch (err) {
+          queryRib.executeQuery();
+        }
+      }, url);
+    };
+    function OnQueryBtn() {
+      ExecuteQuery();
+    }
+    function OnFilterChange() {
+      queryRib.debounce(() => {
+        skip = 0;
+        ExecuteQuery();
+      }, 500);
+    };
+    function oninputkey(event) {
+      if (event.code == 'Enter') {
+        OnFilterChange();
+      };
+    };
+    function OnSelectRib() {
+      active_rib = document.querySelector('input[name="rib"]:checked').value;
+      skip = 0;
+      ExecuteQuery();
+    }
+    function OnRefreshStats() {
+      if (!("ribs" in server_statistics)) {
+        return;
+      }
+      let activeribs = new Array();
+      let server_ribs = server_statistics["ribs"];
+      let ribs = ['ipv4u', 'ipv4m', 'ipv4lu', 'vpnv4u', 'vpnv4m', 'l2vpls', 'ipv6u', 'ipv6m', 'ipv6lu', 'vpnv6u', 'vpnv6m', 'mvpn', 'evpn', 'fs4u'];
+      ribs.forEach((rnm) => {
+        if (rnm in server_ribs) {
+          if (server_ribs[rnm] > 0) {
+            activeribs.push(rnm);
+          }
+        }
+      });
+      let frib = null;
+      let actribfound = 0;
+      let rbs = activeribs.map((cur) => {
+        if (!frib) frib = cur;
+        if (cur == active_rib) actribfound = 1;
+        let ret = '<input type="radio" name="rib" id="rib_' + cur + '" value="' + cur + '" OnChange="OnSelectRib()"' + (cur == active_rib ? ' checked' : '') + '><label for="rib_' + cur + '">' + cur + '</label>';
+        return ret;
+      }).join(" | ");
+      if (!actribfound) {
+        rbs = activeribs.map((cur) => {
+          let ret = '<input type="radio" name="rib" id="rib_' + cur + '" value="' + cur + '" OnChange="OnSelectRib()"' + (cur == frib ? ' checked' : '') + '><label for="rib_' + cur + '">' + cur + '</label>';
+          return ret;
+        }).join(" | ");
+      }
+      if (rbs.length<1) rbs="No RIBs yet...";
+      document.getElementById('ribs').innerHTML = rbs;
+      if (!actribfound) {
+        active_rib = frib;
+      }
+      skip = 0;
+      ExecuteQuery();
+    }
+    function CheckStat() {
+      queryStatistics.Query((event) => {
+        try {
+          server_statistics = JSON.parse(event.target.responseText);
+          OnRefreshStats();
+        } catch (err) {
+          queryStatistics.executeQuery();
+          return;
+        }
+      }, "api/statistics");
+    }
+  </script>
+  <script type="text/javascript">
+    class BgpAs extends HTMLElement {
+      render() {
+        this.innerHTML = "<span class='graybox' OnMouseOver='OnOverBgpAs(event)' OnMouseOut='OnHidePopup(event)'>" + this.getAttribute('val') + "</span> ";
+      }
+      connectedCallback() {
+        if (!this.rendered) {
+          this.render();
+          this.rendered = true;
+        }
+      }
+      static get observedAttributes() {
+        return ['val'];
+      }
+      attributeChangedCallback(name, oldValue, newValue) {
+        this.render();
+      }
+    };
+    class IpAddr extends HTMLElement {
+      render() {
+        this.innerHTML = "<span class='graybox' OnMouseOver='OnOverIpAddr(event)' OnMouseOut='OnHidePopup(event)'>" + this.getAttribute('val') + "</span> ";
+      }
+      connectedCallback() {
+        if (!this.rendered) {
+          this.render();
+          this.rendered = true;
+        }
+      }
+      static get observedAttributes() {
+        return ['val'];
+      }
+      attributeChangedCallback(name, oldValue, newValue) {
+        this.render();
+      }
+    };
+    var popup_target = undefined;
+    function showPopupText(txt) {
+      if (!txt) {
+        popup_target = undefined;
+        return;
+      }
+      if (!txt.length) {
+        popup_target = undefined;
+        return;
+      }
+      if (!popup_target) return;
+      let ppup = document.getElementById('wnd');
+      if (!ppup) return;
+      let rct = popup_target.getBoundingClientRect();
+      let x = rct.left + window.scrollX;
+      let y = rct.bottom + window.scrollY;
+      ppup.style.position = 'absolute';
+      ppup.style.top = y + "px";
+      ppup.style.left = x + "px";
+      ppup.innerHTML = "<pre>" + escapeHTML(txt) + "</pre>";
+      ppup.style.display = 'block';
+      popup_target = undefined;
+    };
+    var queryWhois = new ApiQuery();
+    function ExecutePopupQuery(uritxt) {
+      queryWhois.Query((event) => {
+        showPopupText(event.target.responseText);
+      }, uritxt);
+    };
+    function OnHidePopup(event) {
+      let ppup = document.getElementById('wnd');
+      if (!ppup) return;
+      ppup.style.display = 'none';
+    };
+    function OnOverBgpAs(event) {
+      popup_target = event.target.parentNode;
+      if (event.target.parentNode.tagName != 'BGP-AS') return;
+      let asn = parseInt(event.target.parentNode.getAttribute('val'));
+      queryWhois.debounce(() => {
+        ExecutePopupQuery('api/whois/as?query=AS' + encodeURI("" + asn));
+      }, 500);
+    };
+    function OnOverIpAddr(event) {
+      popup_target = event.target.parentNode;
+      if (event.target.parentNode.tagName != 'IP-ADDR') return;
+      let ipaddr = event.target.parentNode.getAttribute('val');
+      queryWhois.debounce(() => {
+        ExecutePopupQuery('api/dns/' + encodeURI("" + ipaddr));
+      }, 500);
+    };
+    customElements.define("bgp-as", BgpAs);
+    customElements.define("ip-addr", IpAddr);
+  </script>
+  <style>
+    TABLE.rtbl TR TD {
+      vertical-align: top;
+      font-family: monospace;
+    }
+
+    TABLE.rtbl TR:nth-child(even) {
+      background: #e0f0f0
+    }
+
+    TABLE.rtbl TR TD.inactive {
+      vertical-align: top;
+      font-family: monospace;
+      font-style: italic;
+      color: #707070;
+    }
+
+    TABLE.hist TR TD {
+      vertical-align: top;
+      font-family: monospace;
+      font-style: normal;
+      color: #000000;
+    }
+
+    TABLE.hist TR {
+      background: #f0f0e0
+    }
+
+    TABLE.hist TR:nth-child(even) {
+      background: #f0e0f0
+    }
+
+    TABLE.hist TR TD.inactive {
+      vertical-align: top;
+      font-family: monospace;
+      font-style: normal;
+      color: #707070;
+    }
+
+    TABLE.hist TR TD {
+      vertical-align: top;
+      font-family: monospace;
+      font-style: normal;
+      color: #000000;
+    }
+
+    .graybox {
+      border-radius: 3px;
+      -moz-border-radius: 3px;
+      background-color: #e0e0e0;
+      border-color: #404040;
+      padding: 0px;
+      margin: 0px;
+      border: 1px solid;
+    }
+
+    .popup {
+      position: absolute;
+      border: 1px solid black;
+      background-color: #ffffa0;
+    }
+
+    @keyframes movingBox {
+      0% {
+        transform: translate(0px, 0px) scale(1, 1);
+        opacity: 0.4;
+      }
+
+      100% {
+        transform: translate(400px, 0px) scale(100, 1);
+        opacity: 0.8;
+      }
+    }
+
+    .debounceanimate {
+      animation-name: movingBox;
+      animation-duration: 500ms;
+      animation-iteration-count: infinite;
+      animation-direction: alternate;
+    }
+  </style>
+</head>
+
+<body OnLoad="CheckStat()">
+  <div id='ribs'>No RIBs yet...</div>
+  <div><input type=text id='filtertext' style='width:90%'
+      placeholder='[-]10.0.0.0/8 community:100:1000 as:^100 as:100$ nh:1.1.1.1 rt:100:1000 rd:12389:1'
+      onkeydown="return oninputkey(event)"><input id="querybtn" type="button" value="&gt;&gt;" OnClick="OnQueryBtn()"></div>
+  <img id='inprogress' src='wait.svg' border='0' style='display:none;position:fixed;width:32px;height:32px'>
+  <div id='noroutes'>
+    <ul>
+      <li>Filter terms:
+        <ul>
+          <li>10.0.0.0/8 - all matching subnet routes</li>
+          <li>10.0.0.0 - matching routes</li>
+          <li>nh:1.1.1.1 - routes with next hop 1.1.1.1</li>
+          <li>community:100:100 - routes with community 100:100</li>
+          <li>as:100 - as-path contains AS100</li>
+          <li>as:^100 - as-path starting with AS100</li>
+          <li>as:100$ - as-path origins from AS100</li>
+          <li>rd:100:1000 - route distinguisher 100:1000</li>
+          <li>rt:100:1000 - route target 100:1000</li>
+        </ul>
+      </li>
+      <li>Filters examples:
+        <ul>
+          <li>1.0.0.0/16 as:100 -as:1000$ - routes matching subnet 1.0.0.0/16 with as-path contans AS100 and origins not
+            from AS1000</li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+  <div id='wnd' style='display:none' class='popup' OnMouseOut='OnHidePopup(event)'></div>
+  <div id='result'></div>
+</body>
+
+</html>
