@@ -406,7 +406,7 @@ impl WhoisSvr {
                     break;
                 }
             }
-            let res = match self.whs.lookup(opts).await {
+            let res = match self.whs.lookup_async(opts).await {
                 Ok(v) => v,
                 Err(e) => return Err(e),
             };
