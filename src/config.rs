@@ -3,13 +3,27 @@ use std::fmt;
 use std::str::FromStr;
 use whois_rust::WhoIs;
 
+/// peer protocol mode
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerMode {
+    /// bgpexplorer connects to BGP router
     BgpActive,
+    /// BGP router connects to bgpexplorer
     BgpPassive,
+    /// BMP router connects to bgpexplorer
     BmpPassive,
+    /// bgpexplorer connects to BMP router
     BmpActive,
 }
+/// history store mode variations
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryChangeMode {
+    /// every update recorded, even duplicates
+    EveryUpdate,
+    /// history record made only if route attributes is differ
+    OnlyDiffer,
+}
+
 #[derive(Debug, Clone)]
 pub struct SvcConfig {
     pub routerid: std::net::Ipv4Addr,
@@ -20,6 +34,8 @@ pub struct SvcConfig {
     pub httplisten: std::net::SocketAddr,
     pub httproot: String,
     pub historydepth: usize,
+    pub httptimeout: u64,
+    pub historymode: HistoryChangeMode,
     pub whoisconfig: WhoIs,
     pub whoisdb: String,
     pub whoisdnses: Vec<std::net::SocketAddr>,
@@ -79,6 +95,19 @@ impl FromStr for PeerMode {
     }
 }
 
+impl FromStr for HistoryChangeMode {
+    type Err = ErrorConfig;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let sp: Vec<&str> = s.split(' ').collect();
+        match sp[0] {
+            "every" => Ok(HistoryChangeMode::EveryUpdate),
+            "differ" => Ok(HistoryChangeMode::OnlyDiffer),
+            _ => Err(ErrorConfig::from_str("invalid history mode")),
+        }
+    }
+}
+
 impl SvcConfig {
     pub fn from_inifile(inifile: &str) -> Result<SvcConfig, ErrorConfig> {
         let conf = ini!(inifile);
@@ -106,6 +135,11 @@ impl SvcConfig {
         };
         let svcsection = &conf[session];
 
+        if !svcsection.contains_key("mode") {
+            return Err(ErrorConfig::from_string(format!(
+                "Missing value 'mode' in [{}] section ini file {}",session,inifile
+            )));
+        };
         let mode = match svcsection["mode"] {
             None => {
                 return Err(ErrorConfig::from_str(
@@ -252,6 +286,14 @@ impl SvcConfig {
                 )));
             }
         };
+        let httptimeout = if mainsection.contains_key("httptimeout") {
+            match mainsection["httptimeout"] {
+                Some(ref s) => s.parse().unwrap_or(120),
+                None => 120,
+            }
+        } else {
+            120
+        };
         let httproot = if mainsection.contains_key("httproot") {
             match mainsection["httproot"] {
                 Some(ref s) => s.to_string(),
@@ -277,6 +319,24 @@ impl SvcConfig {
             }
         } else {
             10
+        };
+        let historymode: HistoryChangeMode = if mainsection.contains_key("historymode") {
+            match mainsection["historymode"] {
+                None => {
+                    return Err(ErrorConfig::from_str("invalid historymode was specified"));
+                }
+                Some(ref s) => match s.parse() {
+                    Err(e) => {
+                        return Err(ErrorConfig::from_string(format!(
+                            "Invalid historymode - {}",
+                            e
+                        )));
+                    }
+                    Ok(a) => a,
+                },
+            }
+        } else {
+            HistoryChangeMode::OnlyDiffer
         };
         let purge_after_withdraws: u64 = if mainsection.contains_key("purge") {
             match mainsection["purge"] {
@@ -344,8 +404,10 @@ impl SvcConfig {
             protolisten: protolisten,
             bgppeeras: bgppeeras,
             httplisten: httplisten,
+            httptimeout: httptimeout,
             httproot: httproot,
             historydepth: historydepth,
+            historymode: historymode,
             whoisconfig: whois,
             whoisdb: whoisdb,
             whoisdnses: dnses,
