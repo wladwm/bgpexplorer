@@ -128,9 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = tokio_util::sync::CancellationToken::new();
     let mut svr = BgpSvr::new(
         conf.clone(),
-        token.clone(),
-        conf.historydepth,
-        conf.purge_after_withdraws,
+        token.clone()
     );
     svr.start_updates().await;
     let msvr = Arc::new(svr);

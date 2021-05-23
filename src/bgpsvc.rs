@@ -40,14 +40,12 @@ impl BgpUpdateHandler for BgpSvr {
 impl BgpSvr {
     pub fn new(
         cfg: SvcConfig,
-        cancel_token: tokio_util::sync::CancellationToken,
-        historydepth: usize,
-        purge_after_withdraws: u64
+        cancel_token: tokio_util::sync::CancellationToken
     ) -> BgpSvr {
         BgpSvr {
-            config: cfg,
+            config: cfg.clone(),
             cancellation: cancel_token,
-            rib: BgpRIBts::new(historydepth,purge_after_withdraws),
+            rib: BgpRIBts::new(&cfg),
             upd: None,
             updater: None,
         }

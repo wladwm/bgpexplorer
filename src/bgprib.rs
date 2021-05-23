@@ -1,4 +1,7 @@
+use crate::config::*;
+use crate::ribfilter::RouteFilter;
 use chrono::prelude::*;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 use zettabgp::prelude::*;
 
@@ -50,19 +53,19 @@ impl<T: std::hash::Hash + Eq + Ord> RibItem<T> {
     }
 }
 pub struct RibItemStore<T: std::hash::Hash + Eq + Ord> {
-    pub items: std::collections::HashSet<RibItem<T>>,
+    pub items: HashSet<RibItem<T>>,
 }
 impl<T: std::hash::Hash + Eq + PartialOrd + Ord> RibItemStore<T> {
     pub fn new() -> RibItemStore<T> {
         RibItemStore {
-            items: std::collections::HashSet::new(),
+            items: HashSet::new(),
         }
     }
     pub fn len(&self) -> usize {
         self.items.len()
     }
     pub fn purge(&mut self) {
-        let mut trg = std::collections::HashSet::<RibItem<T>>::new();
+        let mut trg = HashSet::<RibItem<T>>::new();
         let mut removed: usize = 0;
         for i in self.items.iter() {
             if !i.is_empty() {
@@ -105,17 +108,22 @@ impl BgpAttrEntry {
         }
     }
 }
-pub trait BgpRIBKey: std::hash::Hash + std::cmp::Eq + std::cmp::Ord {
+pub trait BgpRIBKey: std::hash::Hash + std::cmp::Eq + std::cmp::Ord + Clone {
     fn getlabels(&self) -> Option<MplsLabels> {
         None
     }
 }
-impl<T: BgpItem<T> + std::hash::Hash + std::cmp::Eq + std::cmp::Ord> BgpRIBKey for Labeled<T> {
+impl<T: BgpItem<T> + std::hash::Hash + std::cmp::Eq + std::cmp::Ord + Clone> BgpRIBKey
+    for Labeled<T>
+{
     fn getlabels(&self) -> Option<MplsLabels> {
         Some(self.labels.clone())
     }
 }
-impl<T: BgpItem<T> + std::hash::Hash + std::cmp::Eq + std::cmp::Ord> BgpRIBKey for WithRd<T> {}
+impl<T: BgpItem<T> + std::hash::Hash + std::cmp::Eq + std::cmp::Ord + Clone> BgpRIBKey
+    for WithRd<T>
+{
+}
 impl BgpRIBKey for BgpAddrL2 {
     fn getlabels(&self) -> Option<MplsLabels> {
         Some(self.labels.clone())
@@ -127,12 +135,12 @@ impl BgpRIBKey for BgpMVPN {}
 impl BgpRIBKey for BgpEVPN {}
 impl BgpRIBKey for BgpFlowSpec<BgpAddrV4> {}
 pub struct BgpAttrHistory {
-    pub items: std::collections::BTreeMap<DateTime<Local>, BgpAttrEntry>,
+    pub items: BTreeMap<DateTime<Local>, BgpAttrEntry>,
 }
 impl BgpAttrHistory {
     pub fn new() -> BgpAttrHistory {
         BgpAttrHistory {
-            items: std::collections::BTreeMap::new(),
+            items: BTreeMap::new(),
         }
     }
     fn shrink_hist(&mut self, maxlen: usize) {
@@ -155,19 +163,127 @@ impl BgpAttrHistory {
         self.items.iter().last()
     }
 }
+pub struct BgpRIBIndex<K: Eq + Ord + Clone, T: BgpRIBKey> {
+    pub idx: BTreeMap<K, BTreeSet<T>>,
+}
+impl<K: Eq + Ord + Clone, T: BgpRIBKey> BgpRIBIndex<K, T> {
+    pub fn new() -> BgpRIBIndex<K, T> {
+        BgpRIBIndex::<K, T> {
+            idx: BTreeMap::new(),
+        }
+    }
+    pub fn set(&mut self, k: &K, t: &T) {
+        if !self.idx.contains_key(k) {
+            self.idx
+                .insert(k.clone(), vec![t.clone()].into_iter().collect());
+        } else {
+            self.idx.get_mut(&k).unwrap().insert(t.clone());
+        }
+    }
+}
+pub struct EmptyIter<'a, K: BgpRIBKey, T> {
+    phantom: std::marker::PhantomData<(&'a K, &'a T)>,
+}
+impl<'a, K: BgpRIBKey, T> EmptyIter<'a, K, T> {
+    pub fn new() -> Self {
+        Self {
+            phantom: std::marker::PhantomData,
+        }
+    }
+}
+impl<'a, K: BgpRIBKey, T> std::iter::Iterator for EmptyIter<'a, K, T> {
+    type Item = (&'a K, &'a T);
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
+}
+
+pub struct MapFilter<'a, 'b, K: BgpRIBKey, T> {
+    pub mapitr: Box<dyn std::iter::Iterator<Item = (&'a K, &'a T)> + 'a>,
+    pub flt: &'b BTreeSet<K>,
+}
+impl<'a, 'b, K: BgpRIBKey, T> MapFilter<'a, 'b, K, T> {
+    pub fn new(
+        srcitr: Box<dyn std::iter::Iterator<Item = (&'a K, &'a T)> + 'a>,
+        sflt: &'b BTreeSet<K>,
+    ) -> Self {
+        Self {
+            mapitr: srcitr,
+            flt: sflt,
+        }
+    }
+}
+impl<'a, 'b, K: BgpRIBKey, T> std::iter::Iterator for MapFilter<'a, 'b, K, T> {
+    type Item = (&'a K, &'a T);
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(citr) = self.mapitr.next() {
+            if self.flt.contains(citr.0) {
+                return Some(citr);
+            }
+        }
+        None
+    }
+}
 pub struct BgpRIBSafi<T: BgpRIBKey> {
     pub log_size: usize,
-    pub items: std::collections::BTreeMap<T, BgpAttrHistory>,
+    pub history_mode: HistoryChangeMode,
+    pub items: BTreeMap<T, BgpAttrHistory>,
+    pub idx_aspath: BgpRIBIndex<BgpAS, T>,
+    pub idx_community: BgpRIBIndex<BgpCommunity, T>,
+    pub idx_extcommunity: BgpRIBIndex<BgpExtCommunity, T>,
 }
 impl<T: BgpRIBKey> BgpRIBSafi<T> {
-    pub fn new(logsize: usize) -> BgpRIBSafi<T> {
+    pub fn new(logsize: usize, historymode: HistoryChangeMode) -> BgpRIBSafi<T> {
         BgpRIBSafi {
             log_size: logsize,
-            items: std::collections::BTreeMap::new(),
+            history_mode: historymode,
+            items: BTreeMap::new(),
+            idx_aspath: BgpRIBIndex::new(),
+            idx_community: BgpRIBIndex::new(),
+            idx_extcommunity: BgpRIBIndex::new(),
+        }
+    }
+    pub fn from_config(cfg: &SvcConfig) -> BgpRIBSafi<T> {
+        BgpRIBSafi {
+            log_size: cfg.historydepth,
+            history_mode: cfg.historymode.clone(),
+            items: BTreeMap::new(),
+            idx_aspath: BgpRIBIndex::new(),
+            idx_community: BgpRIBIndex::new(),
+            idx_extcommunity: BgpRIBIndex::new(),
         }
     }
     pub fn len(&self) -> usize {
         self.items.len()
+    }
+    pub fn get_iter<'b>(
+        &'b self,
+        filter: &RouteFilter,
+    ) -> Box<dyn std::iter::Iterator<Item = (&'b T, &'b BgpAttrHistory)> + 'b> {
+        let mut ret: Box<dyn std::iter::Iterator<Item = (&'b T, &'b BgpAttrHistory)> + 'b> =
+            Box::new(self.items.iter());
+        for asp in filter.find_aspath_item().iter() {
+            if let Some(f1) = self.idx_aspath.idx.get(&BgpAS::new(asp.value)) {
+                ret = Box::new(MapFilter::new(ret, f1));
+            } else {
+                return Box::new(EmptyIter::new());
+            };
+        }
+        for cmn in filter.find_community_item().iter() {
+            if let Some(f1) = self.idx_community.idx.get(cmn) {
+                ret = Box::new(MapFilter::new(ret, f1));
+            } else {
+                return Box::new(EmptyIter::new());
+            };
+        }
+        for cmn in filter.find_extcommunity_item().iter() {
+            if let Some(f1) = self.idx_extcommunity.idx.get(cmn) {
+                ret = Box::new(MapFilter::new(ret, f1));
+            } else {
+                return Box::new(EmptyIter::new());
+            };
+        }
+        ret
     }
     pub fn handle_withdraws_afi(&mut self, v: &Vec<T>) {
         if v.len() < 1 {
@@ -175,18 +291,34 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
         }
         let now = Local::now();
         for i in v.into_iter() {
+            //TODO: indexes cleanup
             match self.items.get_mut(&i) {
                 None => {}
                 Some(hist) => {
                     hist.shrink_hist(self.log_size - 1);
-                    let attrs = match hist.get_last_entry() {
+                    let lrec = match hist.get_last_entry() {
                         None => {
                             panic!("Empty history map")
                         }
-                        Some(v) => v.1.attrs.clone(),
+                        Some(v) => v.1,
+                    }
+                    .clone();
+                    match self.history_mode {
+                        HistoryChangeMode::EveryUpdate => {
+                            hist.items.insert(
+                                now,
+                                BgpAttrEntry::new(false, lrec.attrs.clone(), i.getlabels()),
+                            );
+                        }
+                        HistoryChangeMode::OnlyDiffer => {
+                            if lrec.active {
+                                hist.items.insert(
+                                    now,
+                                    BgpAttrEntry::new(false, lrec.attrs.clone(), i.getlabels()),
+                                );
+                            }
+                        }
                     };
-                    hist.items
-                        .insert(now, BgpAttrEntry::new(false, attrs, i.getlabels()));
                 }
             }
         }
@@ -197,6 +329,18 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
         }
         let now = Local::now();
         for i in v.into_iter() {
+            for aspathitem in rattr.aspath.value.iter() {
+                self.idx_aspath.set(aspathitem, &i);
+            }
+            for cmn in rattr.comms.value.iter() {
+                self.idx_community.set(cmn, &i);
+            }
+            for cmn in rattr.extcomms.value.iter() {
+                // only route targets
+                if cmn.subtype == 2 {
+                    self.idx_extcommunity.set(cmn, &i);
+                }
+            }
             let histrec = BgpAttrEntry::new(true, rattr.clone(), i.getlabels());
             match self.items.get_mut(&i) {
                 None => {
@@ -206,16 +350,24 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                 }
                 Some(hist) => {
                     hist.shrink_hist(self.log_size - 1);
-                    match hist.get_last_entry() {
+                    let lrec = match hist.get_last_entry() {
                         None => {
                             panic!("Empty history map")
                         }
-                        Some(_) => {
+                        Some(v) => v.1.clone(),
+                    };
+                    match self.history_mode {
+                        HistoryChangeMode::EveryUpdate => {
                             hist.items.insert(now, histrec);
                         }
-                    }
+                        HistoryChangeMode::OnlyDiffer => {
+                            if !lrec.active || lrec.attrs != histrec.attrs {
+                                hist.items.insert(now, histrec);
+                            }
+                        }
+                    };
                 }
-            }
+            };
         }
     }
 }
@@ -249,7 +401,7 @@ unsafe impl Sync for BgpRIB {}
 unsafe impl Send for BgpRIB {}
 
 impl BgpRIB {
-    pub fn new(logsize: usize, purge_after_withdraws: u64) -> BgpRIB {
+    pub fn new(cfg: &SvcConfig) -> BgpRIB {
         BgpRIB {
             pathes: RibItemStore::new(),
             comms: RibItemStore::new(),
@@ -258,23 +410,23 @@ impl BgpRIB {
             clusters: RibItemStore::new(),
             pmsi_ta_s: RibItemStore::new(),
             attrs: RibItemStore::new(),
-            ipv4u: BgpRIBSafi::new(logsize),
-            ipv4m: BgpRIBSafi::new(logsize),
-            ipv4lu: BgpRIBSafi::new(logsize),
-            vpnv4u: BgpRIBSafi::new(logsize),
-            vpnv4m: BgpRIBSafi::new(logsize),
-            ipv6u: BgpRIBSafi::new(logsize),
-            ipv6lu: BgpRIBSafi::new(logsize),
-            vpnv6u: BgpRIBSafi::new(logsize),
-            vpnv6m: BgpRIBSafi::new(logsize),
-            l2vpls: BgpRIBSafi::new(logsize),
-            mvpn: BgpRIBSafi::new(logsize),
-            evpn: BgpRIBSafi::new(logsize),
-            fs4u: BgpRIBSafi::new(logsize),
+            ipv4u: BgpRIBSafi::from_config(cfg),
+            ipv4m: BgpRIBSafi::from_config(cfg),
+            ipv4lu: BgpRIBSafi::from_config(cfg),
+            vpnv4u: BgpRIBSafi::from_config(cfg),
+            vpnv4m: BgpRIBSafi::from_config(cfg),
+            ipv6u: BgpRIBSafi::from_config(cfg),
+            ipv6lu: BgpRIBSafi::from_config(cfg),
+            vpnv6u: BgpRIBSafi::from_config(cfg),
+            vpnv6m: BgpRIBSafi::from_config(cfg),
+            l2vpls: BgpRIBSafi::from_config(cfg),
+            mvpn: BgpRIBSafi::from_config(cfg),
+            evpn: BgpRIBSafi::from_config(cfg),
+            fs4u: BgpRIBSafi::from_config(cfg),
             cnt_updates: 0,
             cnt_withdraws: 0,
             cnt_purge: 0,
-            purge_attrs: purge_after_withdraws,
+            purge_attrs: cfg.purge_after_withdraws,
         }
     }
     pub fn purge(&mut self) {
@@ -284,6 +436,7 @@ impl BgpRIB {
         self.lcomms.purge();
         self.comms.purge();
         self.pathes.purge();
+        self.cnt_purge = self.cnt_withdraws / self.purge_attrs;
     }
     pub fn handle_withdraws(&mut self, withdraws: &BgpAddrs) {
         match withdraws {
@@ -426,11 +579,10 @@ impl BgpRIB {
         }
         self.cnt_updates += updates_count as u64;
         self.cnt_withdraws += withdraws_count as u64;
-        if self.cnt_withdraws / self.purge_attrs != self.cnt_purge {
-            self.cnt_purge = self.cnt_withdraws / self.purge_attrs;
-            self.purge();
-        }
         Ok(())
+    }
+    pub fn needs_purge(&self) -> bool {
+        self.cnt_withdraws / self.purge_attrs != self.cnt_purge
     }
 }
 

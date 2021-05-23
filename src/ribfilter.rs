@@ -1,6 +1,8 @@
 use crate::bgprib::{BgpAttrHistory, BgpAttrs, BgpRIBKey, BgpRIBSafi};
 use zettabgp::prelude::*;
 use std::ops::RangeInclusive;
+use std::collections::BTreeSet;
+use crate::config::*;
 
 use regex::Regex;
 use std::rc::Rc;
@@ -505,7 +507,7 @@ pub struct RouteFilterSubnets<'a, 'b, T: FilterMatchRoute + BgpRIBKey> {
     filter: &'a RouteFilter,
     maxdepth: usize,
     onlyactive: bool,
-    srcitr: Box<dyn std::iter::Iterator<Item=(&'b T, &'b BgpAttrHistory)> + 'b > //std::collections::btree_map::Iter<'a, T, BgpAttrHistory>,
+    srcitr: Box<dyn std::iter::Iterator<Item=(&'b T, &'b BgpAttrHistory)> + 'b >
 }
 impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSubnets<'a, 'b, T> {
     pub fn new(
@@ -520,7 +522,7 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSubnets<'a, 'b, T> {
             onlyactive: onlyactive,
             srcitr: 
             match filter.find_least_subnet() {
-                None => Box::new(srcafi.items.iter()),
+                None => srcafi.get_iter(filter),
                 Some(fnet) => {
                     match fnet.get_subnet_range::<T>() {
                         None => Box::new(srcafi.items.iter()),
@@ -580,7 +582,7 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSupernets<'a, 'b, T> {
             onlyactive: onlyactive,
             srcitr: //srcafi.items.iter(),
             match filter.find_least_subnet() {
-                None => Box::new(srcafi.items.iter()),
+                None => srcafi.get_iter(filter),//Box::new(srcafi.items.iter()),
                 Some(fnet) => {
                     match fnet.get_supernet_range::<T>() {
                         None => Box::new(srcafi.items.iter()),
@@ -733,19 +735,6 @@ impl RouteFilter {
         if self.terms.len() < 1 {
             return FilterItemMatchResult::Yes;
         }
-        /*
-        let mut result = FilterItemMatchResult::Unknown;
-        for i in self.terms.iter() {
-            match i.match_super_route(route, attr) {
-                FilterItemMatchResult::Unknown => {}
-                FilterItemMatchResult::No => {
-                    return FilterItemMatchResult::No;
-                }
-                FilterItemMatchResult::Yes => result = FilterItemMatchResult::Yes,
-            }
-        }
-        result
-        */
         let mut result_route = FilterItemMatchResult::Yes;
         let mut result_attr = FilterItemMatchResult::Yes;
         for i in self.terms.iter() {
@@ -813,6 +802,61 @@ impl RouteFilter {
                     }
                 }
                 _ => {}
+            }
+        };
+        ret
+    }
+    pub fn find_aspath_item<'a>(&'a self) -> BTreeSet<BgpAS> {
+        let mut ret: BTreeSet<BgpAS> = BTreeSet::new();
+        for i in self.terms.iter() {
+            if i.predicate==FilterItemMatchResult::No {
+                continue
+            };
+            match &i.item {
+              FilterItem::ASPath(asp) => {
+               match asp {
+                FilterASPath::Contains(p) => p.value.iter().for_each(|x| {ret.insert(x.clone());}),
+                FilterASPath::StartsWith(p) => p.value.iter().for_each(|x| {ret.insert(x.clone());}),
+                FilterASPath::EndsWith(p) => p.value.iter().for_each(|x| {ret.insert(x.clone());}),
+                FilterASPath::FullMatch(p) => p.value.iter().for_each(|x| {ret.insert(x.clone());}),
+                FilterASPath::Empty => {}
+               }
+              },
+              _ => {}
+            }
+        };
+        ret
+    }
+    pub fn find_community_item<'a>(&'a self) -> BTreeSet<BgpCommunity> {
+        let mut ret: BTreeSet<BgpCommunity> = BTreeSet::new();
+        for i in self.terms.iter() {
+            if i.predicate==FilterItemMatchResult::No {
+                continue
+            };
+            match &i.item {
+              FilterItem::Community(x) => {
+                ret.insert(x.clone());
+              },
+              _ => {}
+            }
+        };
+        ret
+    }
+    pub fn find_extcommunity_item<'a>(&'a self) -> BTreeSet<BgpExtCommunity> {
+        let mut ret: BTreeSet<BgpExtCommunity> = BTreeSet::new();
+        for i in self.terms.iter() {
+            if i.predicate==FilterItemMatchResult::No {
+                continue
+            };
+            match &i.item {
+              FilterItem::ExtCommunity(x) => {
+                match x {
+                    FilterExtComm::PairNum(t) => {ret.insert(BgpExtCommunity::rt_asn(t.0 as u16,t.1));},
+                    FilterExtComm::PairNumIP(t) => {ret.insert(BgpExtCommunity::rt_ipn(t.0.addr,t.1 as u16));},
+                    _ => {},
+                };
+              },
+              _ => {}
             }
         };
         ret
@@ -1637,7 +1681,7 @@ mod tests {
             .contains(&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32)));
         assert!(BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 16)
             .contains(&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24)));
-        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10);
+        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10,HistoryChangeMode::EveryUpdate);
         let attrs = std::rc::Rc::new(BgpAttrs::new());
         safi.handle_updates_afi(
             vec![
@@ -1664,7 +1708,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_num1() {
-        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10);
+        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10,HistoryChangeMode::EveryUpdate);
         let attrs = std::rc::Rc::new(BgpAttrs::new());
         safi.handle_updates_afi(
             vec![
@@ -1714,7 +1758,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_re1() {
-        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10);
+        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10,HistoryChangeMode::EveryUpdate);
         let attrs = std::rc::Rc::new(BgpAttrs::new());
         safi.handle_updates_afi(
             vec![
@@ -1747,7 +1791,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_extrt1() {
-        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10);
+        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10,HistoryChangeMode::EveryUpdate);
         {
             let attrs1 = BgpAttrs {
                 origin: BgpAttrOrigin::Incomplete,
@@ -1859,7 +1903,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_range1() {
-        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10);
+        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10,HistoryChangeMode::EveryUpdate);
         let attrs1 = BgpAttrs {
             origin: BgpAttrOrigin::Incomplete,
             nexthop: BgpAddr::None,
@@ -1901,7 +1945,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_range2() {
-        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10);
+        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10,HistoryChangeMode::EveryUpdate);
         let attrs1 = BgpAttrs {
             origin: BgpAttrOrigin::Incomplete,
             nexthop: BgpAddr::None,
@@ -1941,7 +1985,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_range3() {
-        let mut safi = BgpRIBSafi::<Labeled<WithRd<BgpAddrV4>>>::new(10);
+        let mut safi = BgpRIBSafi::<Labeled<WithRd<BgpAddrV4>>>::new(10,HistoryChangeMode::EveryUpdate);
         let attrs1 = BgpAttrs {
             origin: BgpAttrOrigin::Incomplete,
             nexthop: BgpAddr::None,
