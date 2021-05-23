@@ -14,11 +14,12 @@
       on_done = null;
       on_query_started = null;
       on_query_finished = null;
+      debounce_time = 1000;
       constructor() {
         this.xhr = new XMLHttpRequest();
         this.xhr.onreadystatechange = this.onXhrStateChange.bind(this);
         this.xhr.onerror = this.onXhrStateError.bind(this);
-        this.xhr.timeout = 10000;
+        this.xhr.timeout = 120000;
       }
       debounce(func, wait) {
         var context = this, args = arguments;
@@ -82,7 +83,7 @@
           this.pending_url = url;
           this.on_done = func;
           this.executeQuery();
-        }, 1000);
+        }, this.debounce_time);
       }
     };
   </script>
@@ -250,6 +251,7 @@
       }, url);
     };
     function OnQueryBtn() {
+      queryRib.debounce_time=1;
       ExecuteQuery();
     }
     function OnFilterChange() {
