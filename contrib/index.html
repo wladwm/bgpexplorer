@@ -258,7 +258,7 @@
       queryRib.debounce(() => {
         skip = 0;
         ExecuteQuery();
-      }, 500);
+      }, 1);
     };
     function oninputkey(event) {
       if (event.code == 'Enter') {
@@ -393,7 +393,7 @@
       let asn = parseInt(event.target.parentNode.getAttribute('val'));
       queryWhois.debounce(() => {
         ExecutePopupQuery('api/whois/as?query=AS' + encodeURI("" + asn));
-      }, 500);
+      }, 100);
     };
     function OnOverIpAddr(event) {
       popup_target = event.target.parentNode;
@@ -401,7 +401,7 @@
       let ipaddr = event.target.parentNode.getAttribute('val');
       queryWhois.debounce(() => {
         ExecutePopupQuery('api/dns/' + encodeURI("" + ipaddr));
-      }, 500);
+      }, 100);
     };
     customElements.define("bgp-as", BgpAs);
     customElements.define("ip-addr", IpAddr);
@@ -492,7 +492,7 @@
 <body OnLoad="CheckStat()">
   <div id='ribs'>No RIBs yet...</div>
   <div><input type=text id='filtertext' style='width:90%'
-      placeholder='[-]10.0.0.0/8 community:100:1000 as:^100 as:100$ nh:1.1.1.1 rt:100:1000 rd:12389:1'
+      placeholder='[-]10.0.0.0/8 community:100:1000 as:^100 as:100$ nh:1.1.1.1 rt:100:1000 rd:100:1'
       onkeydown="return oninputkey(event)"><input id="querybtn" type="button" value="&gt;&gt;" OnClick="OnQueryBtn()"></div>
   <img id='inprogress' src='wait.svg' border='0' style='display:none;position:fixed;width:32px;height:32px'>
   <div id='noroutes'>

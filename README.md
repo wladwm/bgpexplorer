@@ -38,6 +38,7 @@ router bgp 65535
   neighbor 10.1.1.1 send-community extended
 ```
 Now on PC with Linux or FreeBSD:
+```
 $ git clone https://github.com/wladwm/bgpexplorer
 ... git messages
 $ cd bgpexplorer
@@ -49,13 +50,14 @@ httplisten=0.0.0.0:8080
 httproot=contrib
 session=s0
 whoisjsonconfig=whois.json
-
 [s0]
-peer=10.0.0.1
+mode=bgpactive
+bgppeer=10.0.0.1
 peeras=65535
 EOF
 
-cargo run
+$ cargo run
+```
 
 After this you should see something like:
 Listening on http://0.0.0.0:8080
@@ -63,6 +65,10 @@ BGP trying 10.0.0.1:179
 Connected to 10.0.0.1:179
 
 After this you can open your favorite browser and point to http://10.1.1.1:8080/ - you should see bgpexplorer basic interface.
+For example view for ipv4 unicast:
+![alt text](screenshots/bgpexp_ipv4u.png "BGP ipv4 unicast")​
+Or vpnv4 unicast:
+![alt text](screenshots/bgpexp_vpnv4.png "BGP vpnv4 unicast")​
 
 ## Configuration
 
@@ -85,11 +91,14 @@ Service section parameters:
 * routerid - BGP router ID, if not specified, default value 1.1.1.1 will be used.
 * peeras - BGP AS number for bgpactive.
 
+BTW, builtin whois proxy allows you to see some info about AS and hosts:
+![alt text](screenshots/bgpexp_whois.png "whois query")​
+
 ## API endpoints
 
 * /api/statistics
-  Parameters: None
-  Returns: RIB statistics object
+  * Parameters: None
+  * Returns: RIB statistics object
   Example:
    {
      // attributes stores usage
