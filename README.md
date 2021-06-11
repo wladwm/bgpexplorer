@@ -60,13 +60,17 @@ $ cargo run
 ```
 
 After this you should see something like:
+```
 Listening on http://0.0.0.0:8080
 BGP trying 10.0.0.1:179
 Connected to 10.0.0.1:179
+```
 
 After this you can open your favorite browser and point to http://10.1.1.1:8080/ - you should see bgpexplorer basic interface.
+
 For example view for ipv4 unicast:
 ![alt text](screenshots/bgpexp_ipv4u.png "BGP ipv4 unicast")​
+
 Or vpnv4 unicast:
 ![alt text](screenshots/bgpexp_vpnv4.png "BGP vpnv4 unicast")​
 
