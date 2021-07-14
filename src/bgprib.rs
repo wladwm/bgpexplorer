@@ -94,6 +94,7 @@ impl<T: std::hash::Hash + Eq + PartialOrd + Ord> RibItemStore<T> {
         }
     }
 }
+#[derive(Clone)]
 pub struct BgpAttrEntry {
     pub active: bool,
     pub attrs: Rc<BgpAttrs>,
@@ -159,8 +160,11 @@ impl BgpAttrHistory {
             }
         }
     }
-    pub fn get_last_entry<'a>(&'a self) -> Option<(&'a DateTime<Local>, &'a BgpAttrEntry)> {
-        self.items.iter().last()
+    pub fn get_last_attr(&self) -> BgpAttrEntry {
+        match self.items.iter().last() {
+            None => panic!("Empty history map!"),
+            Some(v) => (*v.1).clone()
+        }
     }
 }
 pub struct BgpRIBIndex<K: Eq + Ord + Clone, T: BgpRIBKey> {
@@ -296,13 +300,7 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                 None => {}
                 Some(hist) => {
                     hist.shrink_hist(self.log_size - 1);
-                    let lrec = match hist.get_last_entry() {
-                        None => {
-                            panic!("Empty history map")
-                        }
-                        Some(v) => v.1,
-                    }
-                    .clone();
+                    let lrec = hist.get_last_attr();
                     match self.history_mode {
                         HistoryChangeMode::EveryUpdate => {
                             hist.items.insert(
@@ -350,12 +348,7 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                 }
                 Some(hist) => {
                     hist.shrink_hist(self.log_size - 1);
-                    let lrec = match hist.get_last_entry() {
-                        None => {
-                            panic!("Empty history map")
-                        }
-                        Some(v) => v.1.clone(),
-                    };
+                    let lrec = hist.get_last_attr();
                     match self.history_mode {
                         HistoryChangeMode::EveryUpdate => {
                             hist.items.insert(now, histrec);
@@ -395,7 +388,9 @@ pub struct BgpRIB {
     pub cnt_updates: u64,
     pub cnt_withdraws: u64,
     cnt_purge: u64,
-    purge_attrs: u64,
+    purge_after_withdraws: u64,
+    purge_every: chrono::Duration,
+    purged: chrono::DateTime<Local>
 }
 unsafe impl Sync for BgpRIB {}
 unsafe impl Send for BgpRIB {}
@@ -426,7 +421,9 @@ impl BgpRIB {
             cnt_updates: 0,
             cnt_withdraws: 0,
             cnt_purge: 0,
-            purge_attrs: cfg.purge_after_withdraws,
+            purge_after_withdraws: cfg.purge_after_withdraws,
+            purge_every: cfg.purge_every,
+            purged: chrono::Local::now()
         }
     }
     pub fn purge(&mut self) {
@@ -436,7 +433,10 @@ impl BgpRIB {
         self.lcomms.purge();
         self.comms.purge();
         self.pathes.purge();
-        self.cnt_purge = self.cnt_withdraws / self.purge_attrs;
+        if self.purge_after_withdraws > 0 {
+        self.cnt_purge = self.cnt_withdraws / self.purge_after_withdraws;
+        };
+        self.purged = chrono::Local::now();
     }
     pub fn handle_withdraws(&mut self, withdraws: &BgpAddrs) {
         match withdraws {
@@ -582,7 +582,12 @@ impl BgpRIB {
         Ok(())
     }
     pub fn needs_purge(&self) -> bool {
-        self.cnt_withdraws / self.purge_attrs != self.cnt_purge
+        if self.purge_after_withdraws>0 {
+            if self.cnt_withdraws / self.purge_after_withdraws != self.cnt_purge {
+                return true;
+            }
+        }
+        (chrono::Local::now()-self.purged) > self.purge_every
     }
 }
 
