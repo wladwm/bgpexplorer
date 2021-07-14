@@ -2,10 +2,8 @@ use crate::bgprib::{BgpAttrHistory, BgpAttrs, BgpRIBKey, BgpRIBSafi};
 use zettabgp::prelude::*;
 use std::ops::RangeInclusive;
 use std::collections::BTreeSet;
-use crate::config::*;
 
 use regex::Regex;
-use std::rc::Rc;
 
 pub struct SortIter<T> {
     sorted: Vec<T>,

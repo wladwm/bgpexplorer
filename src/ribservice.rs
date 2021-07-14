@@ -6,9 +6,9 @@ use futures::executor::block_on;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::timeout;
 use tokio::sync::mpsc::*;
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 use zettabgp::prelude::*;
 
 #[derive(Clone)]
@@ -48,7 +48,7 @@ pub struct BgpRIBts {
     pub rib: Arc<RwLock<BgpRIB>>,
 }
 impl BgpRIBts {
-    pub fn new(cfg:&SvcConfig) -> BgpRIBts {
+    pub fn new(cfg: &SvcConfig) -> BgpRIBts {
         BgpRIBts {
             locktimeout: Duration::from_secs(cfg.httptimeout),
             rib: Arc::new(RwLock::new(BgpRIB::new(cfg))),
@@ -58,14 +58,12 @@ impl BgpRIBts {
         let ribc = self.rib.clone();
         let builderp = std::thread::Builder::new().name("bgp_garbage_collector".into());
         builderp
-            .spawn(move || {
-                loop {
-                    std::thread::sleep(time::Duration::from_secs(10));
-                    if ! block_on(ribc.read()).needs_purge() {
-                        continue;
-                    }
-                    block_on(ribc.write()).purge();
+            .spawn(move || loop {
+                std::thread::sleep(time::Duration::from_secs(10));
+                if !block_on(ribc.read()).needs_purge() {
+                    continue;
                 }
+                block_on(ribc.write()).purge();
             })
             .unwrap();
         let ribc = self.rib.clone();
@@ -92,14 +90,14 @@ impl BgpRIBts {
             .unwrap()
     }
     pub async fn say_statistics(&self) -> Result<Response<Body>, hyper::http::Error> {
-        let rib = match timeout(self.locktimeout,self.rib.read()).await {
-          Ok(r) => r,
-          Err(_) => {
-            return Response::builder()
-            .status(StatusCode::from_u16(408).unwrap())
-            .header("Content-type", "text/plain")
-            .body("Operation timed out".into());
-          }
+        let rib = match timeout(self.locktimeout, self.rib.read()).await {
+            Ok(r) => r,
+            Err(_) => {
+                return Response::builder()
+                    .status(StatusCode::from_u16(408).unwrap())
+                    .header("Content-type", "text/plain")
+                    .body("Operation timed out".into());
+            }
         };
         let mut rsp: std::collections::HashMap<&str, std::collections::HashMap<&str, u64>> =
             std::collections::HashMap::new();
@@ -165,15 +163,15 @@ impl BgpRIBts {
         queryrib: &str,
         req: &Request<Body>,
     ) -> Result<Response<Body>, hyper::http::Error> {
-        let rib = match timeout(self.locktimeout,self.rib.read()).await {
+        let rib = match timeout(self.locktimeout, self.rib.read()).await {
             Ok(r) => r,
             Err(_) => {
-              return Response::builder()
-              .status(StatusCode::from_u16(408).unwrap())
-              .header("Content-type", "text/plain")
-              .body("Operation timed out".into());
+                return Response::builder()
+                    .status(StatusCode::from_u16(408).unwrap())
+                    .header("Content-type", "text/plain")
+                    .body("Operation timed out".into());
             }
-          };
+        };
         let mut params = RibResponseParams::new(0, 1000, 10, false);
         let mut filter = ribfilter::RouteFilter::new();
         let paramshm = get_url_params(req);
