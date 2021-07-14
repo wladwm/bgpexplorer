@@ -84,7 +84,9 @@ Main section parameters:
 * whoisjsonconfig - json config for whois service, default is whois.json.
 * whoisdb - path to store whois cache db, whoiscache.db by default.
 * historydepth - how many history records should be kept for each route. 10 by default.
-* purge_after_withdraws - garbage collect after specified number of withdraws. 10000 by default.
+* historymode - differ/every. differ - record history event only if some attributes changed. every - anyway record history event.
+* purge_after_withdraws - garbage collect after specified number of withdraws. 0 - turned off, this setting is by default.
+* purge_every - garbage collect every N seconds. Default setting is 5 minutes.
 * session - name for service section, see below.
 
 Service section parameters:

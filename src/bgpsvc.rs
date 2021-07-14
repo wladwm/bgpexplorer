@@ -4,7 +4,6 @@ use crate::bmppeer::*;
 use crate::ribservice::*;
 use crate::*;
 use async_trait::async_trait;
-use zettabgp::prelude::*;
 use hyper::{Body, Request, Response, StatusCode};
 use serde::ser::{SerializeMap, SerializeStruct};
 use std::net::SocketAddr;
@@ -12,6 +11,7 @@ use std::thread::JoinHandle;
 use std::vec::Vec;
 use tokio::net::TcpSocket;
 use tokio::sync::mpsc::*;
+use zettabgp::prelude::*;
 
 #[async_trait]
 pub trait BgpUpdateHandler {
@@ -38,10 +38,7 @@ impl BgpUpdateHandler for BgpSvr {
     }
 }
 impl BgpSvr {
-    pub fn new(
-        cfg: SvcConfig,
-        cancel_token: tokio_util::sync::CancellationToken
-    ) -> BgpSvr {
+    pub fn new(cfg: SvcConfig, cancel_token: tokio_util::sync::CancellationToken) -> BgpSvr {
         BgpSvr {
             config: cfg.clone(),
             cancellation: cancel_token,

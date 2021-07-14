@@ -126,20 +126,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let token = tokio_util::sync::CancellationToken::new();
-    let mut svr = BgpSvr::new(
-        conf.clone(),
-        token.clone()
-    );
+    let mut svr = BgpSvr::new(conf.clone(), token.clone());
     svr.start_updates().await;
     let msvr = Arc::new(svr);
     let svc = Svc::new(
-        Arc::new(conf.httproot),
+        Arc::new(conf.httproot.clone()),
         msvr.clone(),
-        Arc::new(WhoisSvr::new(
-            conf.whoisconfig,
-            conf.whoisdb.clone(),
-            conf.whoisdnses,
-        )),
+        Arc::new(WhoisSvr::new(&conf)),
     );
 
     let tck1 = {
