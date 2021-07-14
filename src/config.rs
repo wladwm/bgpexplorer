@@ -38,9 +38,12 @@ pub struct SvcConfig {
     pub historymode: HistoryChangeMode,
     pub whoisconfig: WhoIs,
     pub whoisdb: String,
+    pub whoisreqtimeout: u64,
+    pub whoiscachesecs: i64,
     pub whoisdnses: Vec<std::net::SocketAddr>,
     pub peermode: PeerMode,
     pub purge_after_withdraws: u64,
+    pub purge_every: chrono::Duration
 }
 
 #[derive(Debug)]
@@ -137,7 +140,8 @@ impl SvcConfig {
 
         if !svcsection.contains_key("mode") {
             return Err(ErrorConfig::from_string(format!(
-                "Missing value 'mode' in [{}] section ini file {}",session,inifile
+                "Missing value 'mode' in [{}] section ini file {}",
+                session, inifile
             )));
         };
         let mode = match svcsection["mode"] {
@@ -338,20 +342,51 @@ impl SvcConfig {
         } else {
             HistoryChangeMode::OnlyDiffer
         };
-        let purge_after_withdraws: u64 = if mainsection.contains_key("purge") {
-            match mainsection["purge"] {
+        let purge_after_withdraws: u64 = if mainsection.contains_key("purge_after_withdraws") {
+            match mainsection["purge_after_withdraws"] {
                 None => {
-                    return Err(ErrorConfig::from_str("invalid purge was specified"));
+                    return Err(ErrorConfig::from_str("invalid purge_after_withdraws was specified"));
                 }
                 Some(ref s) => match s.parse() {
                     Err(e) => {
-                        return Err(ErrorConfig::from_string(format!("Invalid purge - {}", e)));
+                        return Err(ErrorConfig::from_string(format!("Invalid purge_after_withdraws - {}", e)));
                     }
                     Ok(a) => a,
                 },
             }
         } else {
-            10000
+            0
+        };
+        let purge_every: chrono::Duration = if mainsection.contains_key("purge_every") {
+            match mainsection["purge_every"] {
+                None => {
+                    return Err(ErrorConfig::from_str("invalid purge_every was specified"));
+                }
+                Some(ref s) => chrono::Duration::seconds(match s.parse() {
+                    Err(e) => {
+                        return Err(ErrorConfig::from_string(format!("Invalid purge_every - {}", e)));
+                    }
+                    Ok(a) => a,
+                }),
+            }
+        } else {
+            chrono::Duration::minutes(5)
+        };
+        let whoisreqtimeout: u64 = if mainsection.contains_key("whois_request_timeout") {
+            match mainsection["whois_request_timeout"] {
+                Some(ref s) => s.parse().unwrap_or(30),
+                None => 30,
+            }
+        } else {
+            30
+        };
+        let whoiscachesecs: i64 = if mainsection.contains_key("whois_cache_seconds") {
+            match mainsection["whois_cache_seconds"] {
+                Some(ref s) => s.parse().unwrap_or(1800),
+                None => 1800,
+            }
+        } else {
+            1800
         };
         let whois: WhoIs = if mainsection.contains_key("whoisjsonconfig") {
             match mainsection["whoisjsonconfig"] {
@@ -411,8 +446,11 @@ impl SvcConfig {
             whoisconfig: whois,
             whoisdb: whoisdb,
             whoisdnses: dnses,
+            whoisreqtimeout: whoisreqtimeout,
+            whoiscachesecs: whoiscachesecs,
             peermode: peermode,
             purge_after_withdraws: purge_after_withdraws,
+            purge_every: purge_every
         })
     }
 }
