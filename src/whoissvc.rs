@@ -1,4 +1,5 @@
 use crate::*;
+use crate::config::*;
 use chrono::prelude::*;
 use dnssector::*;
 use regex::Regex;
@@ -63,8 +64,8 @@ impl WhoisRec {
             val: vl,
         }
     }
-    fn is_valid(&self) -> bool {
-        chrono::Local::now().signed_duration_since(self.ts) < chrono::Duration::hours(1)
+    fn modified(&self) -> DateTime<Local> {
+        self.ts
     }
 }
 impl From<String> for WhoisRec {
@@ -94,7 +95,7 @@ impl<'de> Deserialize<'de> for WhoisRec {
         enum Field {
             Ts,
             Val,
-        };
+        }
 
         // This part could also be generated independently by:
         //
@@ -199,20 +200,22 @@ pub struct WhoisSvr {
     whs: WhoIs,
     dns: Vec<std::net::SocketAddr>,
     req_timeout: std::time::Duration,
+    cache_valid: chrono::Duration,
     //cache: RwLock<HashMap<String, WhoisRec>>,
     db: sled::Db,
 }
 static INVALID_WHOIS: &[u8] = b"Invalid WHOIS query";
 
 impl WhoisSvr {
-    pub fn new(w: WhoIs, dbfile: String, dnses: Vec<std::net::SocketAddr>) -> WhoisSvr {
+    pub fn new(conf:&SvcConfig) -> WhoisSvr {
         WhoisSvr {
-            whs: w,
-            dns: dnses,
-            req_timeout: std::time::Duration::from_secs(30),
+            whs: conf.whoisconfig.clone(),
+            dns: conf.whoisdnses.clone(),
+            req_timeout: std::time::Duration::from_secs(conf.whoisreqtimeout),
+            cache_valid: chrono::Duration::seconds(conf.whoiscachesecs),
             db: sled::Config::default()
                 .flush_every_ms(Some(10000))
-                .path(dbfile)
+                .path(conf.whoisdb.clone())
                 .open()
                 .unwrap(),
         }
@@ -241,31 +244,14 @@ impl WhoisSvr {
         }
         return Err(WhoIsError::MapError("Unable to bind socket"));
     }
-    pub async fn query_dns_ptr(&self, target: String) -> Result<String, WhoIsError> {
+    pub async fn do_query_dns_ptr(
+        self: &Arc<WhoisSvr>,
+        target: String,
+    ) -> Result<String, WhoIsError> {
         lazy_static! {
             static ref RE_IPV4: Regex =
                 Regex::new(r"([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)").unwrap();
         }
-        let lkey: sled::IVec = WhoisKey::dns_query(target.clone()).into();
-        match self.db.get(lkey.clone()) {
-            Ok(r) => {
-                if let Some(v) = r {
-                    if v.len() > 0 {
-                        match serde_json::from_slice::<WhoisRec>(&v) {
-                            Ok(q) => {
-                                if q.is_valid() {
-                                    return Ok(q.val);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Deserialize error: {:?}", e);
-                            }
-                        };
-                    };
-                };
-            }
-            Err(e) => eprintln!("sled error: {:?}", e),
-        };
         match RE_IPV4.captures(target.as_str()) {
             None => {}
             Some(caps) => {
@@ -285,6 +271,7 @@ impl WhoisSvr {
                         Ok(q) => q,
                         Err(e) => return Err(e),
                     };
+                    let lkey: sled::IVec = WhoisKey::dns_query(target.clone()).into();
                     self.db.insert(lkey, WhoisRec::new(res.clone())).unwrap();
                     return Ok(res);
                 };
@@ -292,7 +279,39 @@ impl WhoisSvr {
         };
         Err(WhoIsError::MapError("Invalid IPv4"))
     }
-    pub async fn do_query_dns(&self, qtype: &str, target: String) -> Result<String, WhoIsError> {
+    pub async fn query_dns_ptr(self: &Arc<WhoisSvr>, target: String) -> Result<String, WhoIsError> {
+        let lkey: sled::IVec = WhoisKey::dns_query(target.clone()).into();
+        match self.db.get(lkey.clone()) {
+            Ok(r) => {
+                if let Some(v) = r {
+                    if v.len() > 0 {
+                        match serde_json::from_slice::<WhoisRec>(&v) {
+                            Ok(q) => {
+                                if chrono::Local::now().signed_duration_since(q.modified())
+                                    > self.cache_valid
+                                {
+                                    // run separate task to refresh cache data
+                                    let slf = self.clone();
+                                    tokio::spawn(async move { slf.do_query_dns_ptr(target).await });
+                                }
+                                return Ok(q.val);
+                            }
+                            Err(e) => {
+                                eprintln!("Deserialize error: {:?}", e);
+                            }
+                        };
+                    };
+                };
+            }
+            Err(e) => eprintln!("sled error: {:?}", e),
+        };
+        self.do_query_dns_ptr(target).await
+    }
+    pub async fn do_query_dns(
+        self: &Arc<WhoisSvr>,
+        qtype: &str,
+        target: String,
+    ) -> Result<String, WhoIsError> {
         let mut parsed_query = dnssector::gen::query(
             target.as_bytes(),
             Type::from_string(qtype).unwrap(),
@@ -353,34 +372,15 @@ impl WhoisSvr {
         };
         Err(WhoIsError::MapError("Not found"))
     }
-    pub async fn query_whois(
-        &self,
+    pub async fn do_query_whois(
+        self: &Arc<WhoisSvr>,
         target: String,
-        checkitem: &Option<Regex>,
+        checkitem: Arc<Option<Regex>>,
     ) -> Result<String, WhoIsError> {
         lazy_static! {
             static ref RE_WHOIS: Regex = Regex::new(r"\b(whois\.[\.a-z0-9\-]+)\b").unwrap();
         }
         let lkey: sled::IVec = WhoisKey::whois_query(target.clone()).into();
-        match self.db.get(lkey.clone()) {
-            Ok(r) => {
-                if let Some(v) = r {
-                    if v.len() > 0 {
-                        match serde_json::from_slice::<WhoisRec>(&v) {
-                            Ok(q) => {
-                                if q.is_valid() {
-                                    return Ok(q.val);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Deserialize error: {:?}", e);
-                            }
-                        };
-                    };
-                };
-            }
-            Err(e) => eprintln!("sled error: {:?}", e),
-        };
         let mut deep: usize = 16;
         let mut whoises: HashMap<String, bool> = HashMap::new();
         while deep > 0 {
@@ -410,13 +410,13 @@ impl WhoisSvr {
                 Ok(v) => v,
                 Err(e) => return Err(e),
             };
-            match checkitem {
+            match *checkitem {
                 None => {
                     self.db.insert(lkey, WhoisRec::new(res.clone())).unwrap();
                     return Ok(res);
                 }
                 Some(_) => {
-                    let v = Self::findstr(res.as_str(), checkitem);
+                    let v = Self::findstr(res.as_str(), &checkitem);
                     if v.len() > 0 {
                         self.db.insert(lkey, WhoisRec::new(res.clone())).unwrap();
                         return Ok(res);
@@ -434,6 +434,39 @@ impl WhoisSvr {
             };
         }
         Err(WhoIsError::MapError("Search failed"))
+    }
+    pub async fn query_whois(
+        self: &Arc<WhoisSvr>,
+        target: String,
+        checkitem: Arc<Option<Regex>>,
+    ) -> Result<String, WhoIsError> {
+        let lkey: sled::IVec = WhoisKey::whois_query(target.clone()).into();
+        match self.db.get(lkey.clone()) {
+            Ok(r) => {
+                if let Some(v) = r {
+                    if v.len() > 0 {
+                        match serde_json::from_slice::<WhoisRec>(&v) {
+                            Ok(q) => {
+                                if chrono::Local::now().signed_duration_since(q.modified())
+                                    > self.cache_valid
+                                {
+                                    let slf = self.clone();
+                                    tokio::spawn(async move {
+                                        slf.do_query_whois(target, checkitem).await
+                                    });
+                                }
+                                return Ok(q.val);
+                            }
+                            Err(e) => {
+                                eprintln!("Deserialize error: {:?}", e);
+                            }
+                        };
+                    };
+                };
+            }
+            Err(e) => eprintln!("sled error: {:?}", e),
+        };
+        self.do_query_whois(target, checkitem).await
     }
     fn filterout_comments<'a>(s: &'a str) -> Vec<&'a str> {
         s.split('\n')
@@ -465,7 +498,7 @@ impl WhoisSvr {
         }
     }
     pub async fn handle_query(
-        &self,
+        self: &Arc<WhoisSvr>,
         req: &Request<Body>,
     ) -> Result<Response<Body>, hyper::http::Error> {
         let requri = req.uri().path();
@@ -501,7 +534,7 @@ impl WhoisSvr {
         if query.len() < 1 {
             return Ok(WhoisSvr::invalid_query());
         };
-        let checkstr = if urlparts.len() >= 4 {
+        let checkstr = Arc::new(if urlparts.len() >= 4 {
             match urlparts[3] {
                 "aut-num" | "as" => Some(Regex::new(r"(aut-num|ASNumber):").unwrap()),
                 "r" | "r4" | "route" => Some(Regex::new(r"route:").unwrap()),
@@ -510,8 +543,8 @@ impl WhoisSvr {
             }
         } else {
             None
-        };
-        let mut rsp = match self.query_whois(query, &checkstr).await {
+        });
+        let mut rsp = match self.query_whois(query, checkstr.clone()).await {
             Ok(v) => v,
             Err(e) => {
                 return Response::builder()
@@ -525,7 +558,7 @@ impl WhoisSvr {
                 "raw" => {}
                 _ => {
                     rsp = {
-                        let v = Self::findstr(rsp.as_str(), &checkstr);
+                        let v = Self::findstr(rsp.as_str(), &*checkstr);
                         if v.len() > 0 {
                             v.join("\n")
                         } else {
@@ -540,7 +573,10 @@ impl WhoisSvr {
             .header("Content-type", "text/plain")
             .body(rsp.into())
     }
-    pub async fn response_fn(&self, req: &Request<Body>) -> Result<Response<Body>, hyper::Error> {
+    pub async fn response_fn(
+        self: &Arc<WhoisSvr>,
+        req: &Request<Body>,
+    ) -> Result<Response<Body>, hyper::Error> {
         //Ok(not_found())
         match self.handle_query(req).await {
             Ok(v) => Ok(v),
