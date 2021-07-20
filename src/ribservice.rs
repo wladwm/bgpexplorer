@@ -54,7 +54,7 @@ impl BgpRIBts {
             rib: Arc::new(RwLock::new(BgpRIB::new(cfg))),
         }
     }
-    pub fn run(&self, mut rx: Receiver<Option<BgpUpdateMessage>>) -> std::thread::JoinHandle<()> {
+    pub fn run(&self, mut rx: Receiver<Option<(BgpSessionId,BgpUpdateMessage)>>) -> std::thread::JoinHandle<()> {
         let ribc = self.rib.clone();
         let builderp = std::thread::Builder::new().name("bgp_garbage_collector".into());
         builderp
@@ -74,7 +74,7 @@ impl BgpRIBts {
                     match updmsg {
                         Some(updm) => {
                             let time_started = Local::now();
-                            if let Err(e) = block_on(ribc.write()).handle_update(updm) {
+                            if let Err(e) = block_on(ribc.write()).handle_update(updm.0,updm.1) {
                                 eprintln!("RIB handle_update: {:?}", e);
                             };
                             let time_done = Local::now();

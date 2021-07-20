@@ -51,8 +51,9 @@ impl serde::Serialize for BgpAttrEntry {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("BgpAttrEntry", 2)?;
+        let mut state = serializer.serialize_struct("BgpAttrEntry", 4)?;
         state.serialize_field("active", &self.active)?;
+        state.serialize_field("sessionid", &self.sessionid)?;
         state.serialize_field::<BgpAttrs>("attrs", &self.attrs)?;
         if let Some(ref lbls) = self.labels {
             state.serialize_field("labels", lbls)?;

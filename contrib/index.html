@@ -89,12 +89,14 @@
   </script>
   <script type="text/javascript">
     var server_statistics = new Array();
+    var bgp_sessions = new Array();
     var active_rib = "";
     var pagesize = 100;
     var skip = 0;
 
     var queryRib = new ApiQuery();
     var queryStatistics = new ApiQuery();
+    var querySessions = new ApiQuery();
 
     function gopage(n) {
       skip = n * pagesize;
@@ -113,6 +115,10 @@
     }
     function escapeASN(asn) {
       return "<bgp-as val='" + asn + "'></bgp-as>";
+    }
+    function textSession(sessid) {
+      let sess=bgp_sessions[sessid];
+      return sess["peer1"]+'-'+sess["peer2"];
     }
     function textAttrs(attr) {
       let rtxt = '<div>';
@@ -216,6 +222,9 @@
         if ("labels" in currec) {
           rtxt += "<div>Labels: " + currec["labels"] + "</div>";
         }
+        if(Object.keys(bgp_sessions).length>1) {
+          rtxt += "<div>Session: "+textSession(currec["sessionid"])+"</div>"
+        }
         if (times.length > 1) {
           rtxt += "<div><button OnClick='Flip(\"hist" + rcnt + "\")'>v</button></div>";
           rtxt += "<div style='display:none' id='hist" + rcnt + "'><table class=hist>";
@@ -227,6 +236,9 @@
             rtxt += "<div>" + showTime(curtime) + "</div><div>" + textAttrs(currec["attrs"]) + "</div>";
             if ("labels" in currec) {
               rtxt += "<div>Labels: " + currec["labels"] + "</div>";
+            }
+            if(Object.keys(bgp_sessions).length>1) {
+             rtxt += "<div>Session: "+textSession(currec["sessionid"])+"</div>"
             }
             rtxt += "</td></tr>";
           }
@@ -246,7 +258,8 @@
         try {
           showRoutes(event.target.responseText);
         } catch (err) {
-          queryRib.executeQuery();
+          //queryRib.executeQuery();
+          alert(err);
         }
       }, url);
     };
@@ -310,7 +323,15 @@
       queryStatistics.Query((event) => {
         try {
           server_statistics = JSON.parse(event.target.responseText);
-          OnRefreshStats();
+          querySessions.Query((event) => {
+           try {
+            bgp_sessions = JSON.parse(event.target.responseText);
+            OnRefreshStats();
+           } catch (err) {
+            querySessions.executeQuery();
+            return;
+           }
+          }, "api/sessions");
         } catch (err) {
           queryStatistics.executeQuery();
           return;

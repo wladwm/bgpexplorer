@@ -1,4 +1,7 @@
-use crate::bgpsvc::*;
+use crate::*;
+use std::collections::BTreeMap;
+use std::net::IpAddr;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::*;
 use zettabgp::bmp::prelude::*;
@@ -6,37 +9,50 @@ use zettabgp::prelude::*;
 
 pub struct BmpPeer<'a, H: BgpUpdateHandler> {
     peersock: tokio::net::TcpStream,
-    filterpeer: Option<std::net::IpAddr>,
+    peer: Arc<ProtoPeer>,
+    sessids: BTreeMap<IpAddr, BgpSessionId>,
     update_handler: &'a H,
 }
 
 impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
     pub fn new(
         sock: tokio::net::TcpStream,
-        flt: Option<std::net::IpAddr>,
+        peer: Arc<ProtoPeer>,
         handler: &'a H,
     ) -> BmpPeer<'a, H> {
         BmpPeer {
             peersock: sock,
-            filterpeer: flt,
+            peer: peer,
+            sessids: BTreeMap::new(),
             update_handler: handler,
         }
     }
     pub async fn processmsg(&mut self, msg: BmpMessage) -> Result<(), BgpError> {
-        if let BmpMessage::RouteMonitoring(rm) = msg {
-            if let Some(filter) = self.filterpeer {
-                if filter != rm.peer.peeraddress {
-                    //skip non-interesting update
-                    return Ok(());
-                }
-            } else {
-                // filter first peer
-                self.filterpeer = Some(rm.peer.peeraddress.clone())
+        match msg {
+            BmpMessage::PeerUpNotification(pu) => {
+                if let Some(ref filter_rd) = self.peer.flt_rd {
+                    if pu.peer.peerdistinguisher != *filter_rd {
+                        //skip non-interesting update
+                        eprintln!("Skip: {:?}", pu);
+                        return Ok(());
+                    }
+                };
+                self.sessids.insert(
+                    pu.peer.peeraddress,
+                    self.update_handler
+                        .register_session(pu.localaddress, pu.peer.peeraddress)
+                        .await,
+                );
             }
-            self.update_handler.handle_update(rm.update).await
-        } else {
-            eprintln!("BMP: {:?}", msg);
-        }
+            BmpMessage::RouteMonitoring(rm) => {
+                let sessid = match self.sessids.get(&rm.peer.peeraddress) {
+                    None => return Ok(()),
+                    Some(x) => *x,
+                };
+                self.update_handler.handle_update(sessid, rm.update).await;
+            }
+            _ => eprintln!("BMP: {:?}", msg),
+        };
         Ok(())
     }
     pub async fn lifecycle(&mut self, cancel: tokio_util::sync::CancellationToken) {

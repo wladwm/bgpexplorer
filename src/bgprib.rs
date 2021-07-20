@@ -1,9 +1,10 @@
-use crate::config::*;
 use crate::ribfilter::RouteFilter;
 use chrono::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 use zettabgp::prelude::*;
+use crate::bgpsvc::BgpSessionId;
+use crate::config::*;
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone)]
 pub struct BgpAttrs {
@@ -97,13 +98,15 @@ impl<T: std::hash::Hash + Eq + PartialOrd + Ord> RibItemStore<T> {
 #[derive(Clone)]
 pub struct BgpAttrEntry {
     pub active: bool,
+    pub sessionid: BgpSessionId,
     pub attrs: Rc<BgpAttrs>,
     pub labels: Option<MplsLabels>,
 }
 impl BgpAttrEntry {
-    pub fn new(act: bool, atr: Rc<BgpAttrs>, lbl: Option<MplsLabels>) -> BgpAttrEntry {
+    pub fn new(act: bool, sess: BgpSessionId, atr: Rc<BgpAttrs>, lbl: Option<MplsLabels>) -> BgpAttrEntry {
         BgpAttrEntry {
             active: act,
+            sessionid: sess,
             attrs: atr,
             labels: lbl,
         }
@@ -160,11 +163,19 @@ impl BgpAttrHistory {
             }
         }
     }
-    pub fn get_last_attr(&self) -> BgpAttrEntry {
+    pub fn get_last_attr(&self,sess: BgpSessionId) -> Option<BgpAttrEntry> {
+        for itm in self.items.iter().rev() {
+            if itm.1.sessionid==sess {
+                return Some(itm.1.clone())
+            }
+        };
+        None
+        /*
         match self.items.iter().last() {
             None => panic!("Empty history map!"),
-            Some(v) => (*v.1).clone()
+            Some(v) => (*v.1).clone(),
         }
+        */
     }
 }
 pub struct BgpRIBIndex<K: Eq + Ord + Clone, T: BgpRIBKey> {
@@ -289,7 +300,7 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
         }
         ret
     }
-    pub fn handle_withdraws_afi(&mut self, v: &Vec<T>) {
+    pub fn handle_withdraws_afi(&mut self, session: BgpSessionId, v: &Vec<T>) {
         if v.len() < 1 {
             return;
         }
@@ -300,19 +311,22 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                 None => {}
                 Some(hist) => {
                     hist.shrink_hist(self.log_size - 1);
-                    let lrec = hist.get_last_attr();
+                    let lrec = match hist.get_last_attr(session) {
+                        None => continue,
+                        Some(x) => x,
+                    };
                     match self.history_mode {
                         HistoryChangeMode::EveryUpdate => {
                             hist.items.insert(
                                 now,
-                                BgpAttrEntry::new(false, lrec.attrs.clone(), i.getlabels()),
+                                BgpAttrEntry::new(false, session, lrec.attrs.clone(), i.getlabels()),
                             );
                         }
                         HistoryChangeMode::OnlyDiffer => {
                             if lrec.active {
                                 hist.items.insert(
                                     now,
-                                    BgpAttrEntry::new(false, lrec.attrs.clone(), i.getlabels()),
+                                    BgpAttrEntry::new(false, session, lrec.attrs.clone(), i.getlabels()),
                                 );
                             }
                         }
@@ -321,7 +335,7 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
             }
         }
     }
-    pub fn handle_updates_afi(&mut self, v: Vec<T>, rattr: Rc<BgpAttrs>) {
+    pub fn handle_updates_afi(&mut self, session: BgpSessionId, v: Vec<T>, rattr: Rc<BgpAttrs>) {
         if v.len() < 1 {
             return;
         }
@@ -339,7 +353,7 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                     self.idx_extcommunity.set(cmn, &i);
                 }
             }
-            let histrec = BgpAttrEntry::new(true, rattr.clone(), i.getlabels());
+            let histrec = BgpAttrEntry::new(true, session, rattr.clone(), i.getlabels());
             match self.items.get_mut(&i) {
                 None => {
                     let mut hist = BgpAttrHistory::new();
@@ -348,15 +362,21 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                 }
                 Some(hist) => {
                     hist.shrink_hist(self.log_size - 1);
-                    let lrec = hist.get_last_attr();
                     match self.history_mode {
                         HistoryChangeMode::EveryUpdate => {
                             hist.items.insert(now, histrec);
                         }
                         HistoryChangeMode::OnlyDiffer => {
-                            if !lrec.active || lrec.attrs != histrec.attrs {
-                                hist.items.insert(now, histrec);
-                            }
+                            match hist.get_last_attr(session) {
+                                None => {
+                                    hist.items.insert(now, histrec);
+                                }
+                                Some(lrec) => {
+                                    if !lrec.active || lrec.attrs != histrec.attrs {
+                                        hist.items.insert(now, histrec);
+                                    }
+                                }
+                            };
                         }
                     };
                 }
@@ -390,7 +410,7 @@ pub struct BgpRIB {
     cnt_purge: u64,
     purge_after_withdraws: u64,
     purge_every: chrono::Duration,
-    purged: chrono::DateTime<Local>
+    purged: chrono::DateTime<Local>,
 }
 unsafe impl Sync for BgpRIB {}
 unsafe impl Send for BgpRIB {}
@@ -423,7 +443,7 @@ impl BgpRIB {
             cnt_purge: 0,
             purge_after_withdraws: cfg.purge_after_withdraws,
             purge_every: cfg.purge_every,
-            purged: chrono::Local::now()
+            purged: chrono::Local::now(),
         }
     }
     pub fn purge(&mut self) {
@@ -434,43 +454,43 @@ impl BgpRIB {
         self.comms.purge();
         self.pathes.purge();
         if self.purge_after_withdraws > 0 {
-        self.cnt_purge = self.cnt_withdraws / self.purge_after_withdraws;
+            self.cnt_purge = self.cnt_withdraws / self.purge_after_withdraws;
         };
         self.purged = chrono::Local::now();
     }
-    pub fn handle_withdraws(&mut self, withdraws: &BgpAddrs) {
+    pub fn handle_withdraws(&mut self, session: BgpSessionId, withdraws: &BgpAddrs) {
         match withdraws {
-            BgpAddrs::IPV4U(v) => self.ipv4u.handle_withdraws_afi(v),
-            BgpAddrs::IPV4M(v) => self.ipv4m.handle_withdraws_afi(v),
-            BgpAddrs::IPV4LU(v) => self.ipv4lu.handle_withdraws_afi(v),
-            BgpAddrs::VPNV4U(v) => self.vpnv4u.handle_withdraws_afi(v),
-            BgpAddrs::VPNV4M(v) => self.vpnv4m.handle_withdraws_afi(v),
-            BgpAddrs::IPV6U(v) => self.ipv6u.handle_withdraws_afi(v),
-            BgpAddrs::IPV6LU(v) => self.ipv6lu.handle_withdraws_afi(v),
-            BgpAddrs::VPNV6U(v) => self.vpnv6u.handle_withdraws_afi(v),
-            BgpAddrs::VPNV6M(v) => self.vpnv6m.handle_withdraws_afi(v),
-            BgpAddrs::L2VPLS(v) => self.l2vpls.handle_withdraws_afi(v),
-            BgpAddrs::MVPN(v) => self.mvpn.handle_withdraws_afi(v),
-            BgpAddrs::EVPN(v) => self.evpn.handle_withdraws_afi(v),
-            BgpAddrs::FS4U(v) => self.fs4u.handle_withdraws_afi(v),
+            BgpAddrs::IPV4U(v) => self.ipv4u.handle_withdraws_afi(session, v),
+            BgpAddrs::IPV4M(v) => self.ipv4m.handle_withdraws_afi(session, v),
+            BgpAddrs::IPV4LU(v) => self.ipv4lu.handle_withdraws_afi(session, v),
+            BgpAddrs::VPNV4U(v) => self.vpnv4u.handle_withdraws_afi(session, v),
+            BgpAddrs::VPNV4M(v) => self.vpnv4m.handle_withdraws_afi(session, v),
+            BgpAddrs::IPV6U(v) => self.ipv6u.handle_withdraws_afi(session, v),
+            BgpAddrs::IPV6LU(v) => self.ipv6lu.handle_withdraws_afi(session, v),
+            BgpAddrs::VPNV6U(v) => self.vpnv6u.handle_withdraws_afi(session, v),
+            BgpAddrs::VPNV6M(v) => self.vpnv6m.handle_withdraws_afi(session, v),
+            BgpAddrs::L2VPLS(v) => self.l2vpls.handle_withdraws_afi(session, v),
+            BgpAddrs::MVPN(v) => self.mvpn.handle_withdraws_afi(session, v),
+            BgpAddrs::EVPN(v) => self.evpn.handle_withdraws_afi(session, v),
+            BgpAddrs::FS4U(v) => self.fs4u.handle_withdraws_afi(session, v),
             _ => {}
         };
     }
-    pub fn handle_updates(&mut self, rattr: Rc<BgpAttrs>, updates: BgpAddrs) {
+    pub fn handle_updates(&mut self, session: BgpSessionId, rattr: Rc<BgpAttrs>, updates: BgpAddrs) {
         match updates {
-            BgpAddrs::IPV4U(v) => self.ipv4u.handle_updates_afi(v, rattr),
-            BgpAddrs::IPV4M(v) => self.ipv4m.handle_updates_afi(v, rattr),
-            BgpAddrs::IPV4LU(v) => self.ipv4lu.handle_updates_afi(v, rattr),
-            BgpAddrs::VPNV4U(v) => self.vpnv4u.handle_updates_afi(v, rattr),
-            BgpAddrs::VPNV4M(v) => self.vpnv4m.handle_updates_afi(v, rattr),
-            BgpAddrs::IPV6U(v) => self.ipv6u.handle_updates_afi(v, rattr),
-            BgpAddrs::IPV6LU(v) => self.ipv6lu.handle_updates_afi(v, rattr),
-            BgpAddrs::VPNV6U(v) => self.vpnv6u.handle_updates_afi(v, rattr),
-            BgpAddrs::VPNV6M(v) => self.vpnv6m.handle_updates_afi(v, rattr),
-            BgpAddrs::L2VPLS(v) => self.l2vpls.handle_updates_afi(v, rattr),
-            BgpAddrs::MVPN(v) => self.mvpn.handle_updates_afi(v, rattr),
-            BgpAddrs::EVPN(v) => self.evpn.handle_updates_afi(v, rattr),
-            BgpAddrs::FS4U(v) => self.fs4u.handle_updates_afi(v, rattr),
+            BgpAddrs::IPV4U(v) => self.ipv4u.handle_updates_afi(session, v, rattr),
+            BgpAddrs::IPV4M(v) => self.ipv4m.handle_updates_afi(session, v, rattr),
+            BgpAddrs::IPV4LU(v) => self.ipv4lu.handle_updates_afi(session, v, rattr),
+            BgpAddrs::VPNV4U(v) => self.vpnv4u.handle_updates_afi(session, v, rattr),
+            BgpAddrs::VPNV4M(v) => self.vpnv4m.handle_updates_afi(session, v, rattr),
+            BgpAddrs::IPV6U(v) => self.ipv6u.handle_updates_afi(session, v, rattr),
+            BgpAddrs::IPV6LU(v) => self.ipv6lu.handle_updates_afi(session, v, rattr),
+            BgpAddrs::VPNV6U(v) => self.vpnv6u.handle_updates_afi(session, v, rattr),
+            BgpAddrs::VPNV6M(v) => self.vpnv6m.handle_updates_afi(session, v, rattr),
+            BgpAddrs::L2VPLS(v) => self.l2vpls.handle_updates_afi(session, v, rattr),
+            BgpAddrs::MVPN(v) => self.mvpn.handle_updates_afi(session, v, rattr),
+            BgpAddrs::EVPN(v) => self.evpn.handle_updates_afi(session, v, rattr),
+            BgpAddrs::FS4U(v) => self.fs4u.handle_updates_afi(session, v, rattr),
             _ => {}
         };
     }
@@ -482,6 +502,7 @@ impl BgpRIB {
     }
     pub fn handle_update(
         &mut self,
+        sessionid: BgpSessionId,
         upd: BgpUpdateMessage,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut attr = BgpAttrs {
@@ -556,8 +577,8 @@ impl BgpRIB {
         let rattr = BgpRIB::register_shared(&mut self.attrs, &attr)?;
         let mut updates_count: usize = upd.updates.len();
         let mut withdraws_count: usize = upd.withdraws.len();
-        self.handle_withdraws(&upd.withdraws);
-        self.handle_updates(rattr.clone(), upd.updates);
+        self.handle_withdraws(sessionid,&upd.withdraws);
+        self.handle_updates(sessionid,rattr.clone(),upd.updates);
         for i in upd.attrs.into_iter() {
             match i {
                 BgpAttrItem::MPUpdates(n) => {
@@ -568,11 +589,11 @@ impl BgpRIB {
                         BgpRIB::register_shared(&mut self.attrs, &attr)?
                     };
                     updates_count += n.addrs.len();
-                    self.handle_updates(cattr.clone(), n.addrs);
+                    self.handle_updates(sessionid,cattr.clone(), n.addrs);
                 }
                 BgpAttrItem::MPWithdraws(n) => {
                     withdraws_count += n.addrs.len();
-                    self.handle_withdraws(&n.addrs);
+                    self.handle_withdraws(sessionid,&n.addrs);
                 }
                 _ => {}
             }
@@ -582,12 +603,12 @@ impl BgpRIB {
         Ok(())
     }
     pub fn needs_purge(&self) -> bool {
-        if self.purge_after_withdraws>0 {
+        if self.purge_after_withdraws > 0 {
             if self.cnt_withdraws / self.purge_after_withdraws != self.cnt_purge {
                 return true;
             }
         }
-        (chrono::Local::now()-self.purged) > self.purge_every
+        (chrono::Local::now() - self.purged) > self.purge_every
     }
 }
 

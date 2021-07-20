@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
+use std::sync::Arc;
 use whois_rust::WhoIs;
 
 /// peer protocol mode
@@ -24,13 +26,176 @@ pub enum HistoryChangeMode {
     OnlyDiffer,
 }
 
+/// peer
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtoPeer {
+    pub routerid: Ipv4Addr,
+    pub mode: PeerMode,
+    pub peer: Option<SocketAddr>,
+    pub protolisten: Option<SocketAddr>,
+    pub bgppeeras: u32,
+    pub flt_rd: Option<zettabgp::afi::BgpRD>
+}
+impl ProtoPeer {
+    pub fn from_ini(
+        svcsection: &std::collections::HashMap<
+            std::string::String,
+            std::option::Option<std::string::String>,
+        >,
+    ) -> Result<ProtoPeer, ErrorConfig> {
+        if !svcsection.contains_key("mode") {
+            return Err(ErrorConfig::from_str("Missing value 'mode'"));
+        };
+        let mode = match svcsection["mode"] {
+            None => {
+                return Err(ErrorConfig::from_str(
+                    "No mode (bgpactive|bgppassive|bmpactive|bmppassive) specified",
+                ));
+            }
+            Some(ref s) => s,
+        };
+        let peermode = mode.parse()?;
+        let peer: Option<std::net::SocketAddr> = if svcsection.contains_key("peer") {
+            match svcsection["peer"] {
+                None => {
+                    return Err(ErrorConfig::from_str("invalid peer was specified"));
+                }
+                Some(ref s) => match s.parse() {
+                    Err(_e) => {
+                        let peerip: std::net::IpAddr = match s.parse() {
+                            Err(_) => {
+                                return Err(ErrorConfig::from_str("invalid peer was specified"));
+                            }
+                            Ok(v) => v,
+                        };
+                        Some(std::net::SocketAddr::new(
+                            peerip,
+                            if peermode == PeerMode::BmpActive {
+                                632
+                            } else {
+                                179
+                            },
+                        ))
+                    }
+                    Ok(a) => Some(a),
+                },
+            }
+        } else {
+            if peermode == PeerMode::BgpActive || peermode == PeerMode::BmpActive {
+                // fatal error
+                return Err(ErrorConfig::from_str("peer was not specified"));
+            } else {
+                None
+            }
+        };
+        let protolisten: Option<SocketAddr> = if svcsection.contains_key("protolisten") {
+            match svcsection["protolisten"] {
+                None => {
+                    return Err(ErrorConfig::from_str("invalid protolisten was specified"));
+                }
+                Some(ref s) => match s.parse() {
+                    Err(_e) => {
+                        let peerip: IpAddr = match s.parse() {
+                            Err(_) => {
+                                return Err(ErrorConfig::from_str(
+                                    "invalid protolisten was specified",
+                                ));
+                            }
+                            Ok(v) => v,
+                        };
+                        Some(SocketAddr::new(
+                            peerip,
+                            if peermode == PeerMode::BmpPassive {
+                                632
+                            } else {
+                                179
+                            },
+                        ))
+                    }
+                    Ok(a) => Some(a),
+                },
+            }
+        } else {
+            if peermode == PeerMode::BgpPassive || peermode == PeerMode::BmpPassive {
+                Some(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+                    if peermode == PeerMode::BmpPassive {
+                        632
+                    } else {
+                        179
+                    },
+                ))
+            } else {
+                None
+            }
+        };
+        let routerid: Ipv4Addr = if svcsection.contains_key("routerid") {
+            match svcsection["routerid"] {
+                None => {
+                    return Err(ErrorConfig::from_str("invalid routerid was specified"));
+                }
+                Some(ref s) => match s.parse() {
+                    Err(e) => {
+                        return Err(ErrorConfig::from_string(format!(
+                            "Invalid routerid - {}",
+                            e
+                        )));
+                    }
+                    Ok(a) => a,
+                },
+            }
+        } else {
+            Ipv4Addr::new(1, 1, 1, 1)
+        };
+        let bgppeeras: u32 = if svcsection.contains_key("peeras") {
+            match svcsection["peeras"] {
+                None => {
+                    return Err(ErrorConfig::from_str("invalid bgppeeras was specified"));
+                }
+                Some(ref s) => match s.parse() {
+                    Err(e) => {
+                        return Err(ErrorConfig::from_string(format!(
+                            "Invalid bgp peer as - {}",
+                            e
+                        )));
+                    }
+                    Ok(a) => a,
+                },
+            }
+        } else {
+            0
+        };
+        let flt_rd = if svcsection.contains_key("filter_rd") {
+            match svcsection["filter_rd"] {
+                None => {
+                    None
+                }
+                Some(ref s) => match s.parse() {
+                    Err(e) => {
+                        return Err(ErrorConfig::from_string(format!(
+                            "Invalid bmp filter_rd - {}",
+                            e
+                        )));
+                    }
+                    Ok(a) => Some(a),
+                },
+            }
+        } else {
+            Some(zettabgp::afi::BgpRD::new(0,0))
+        };
+        Ok(ProtoPeer {
+            routerid: routerid,
+            mode: peermode,
+            peer: peer,
+            protolisten: protolisten,
+            bgppeeras: bgppeeras,
+            flt_rd: flt_rd
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SvcConfig {
-    pub routerid: std::net::Ipv4Addr,
-    pub bgppeeras: u32,
-    pub bgppeer: Option<std::net::SocketAddr>,
-    pub protolisten: Option<std::net::SocketAddr>,
-    pub bmppeer: Option<std::net::SocketAddr>,
     pub httplisten: std::net::SocketAddr,
     pub httproot: String,
     pub historydepth: usize,
@@ -41,9 +206,9 @@ pub struct SvcConfig {
     pub whoisreqtimeout: u64,
     pub whoiscachesecs: i64,
     pub whoisdnses: Vec<std::net::SocketAddr>,
-    pub peermode: PeerMode,
+    pub peers: Vec<Arc<ProtoPeer>>,
     pub purge_after_withdraws: u64,
-    pub purge_every: chrono::Duration
+    pub purge_every: chrono::Duration,
 }
 
 #[derive(Debug)]
@@ -118,160 +283,15 @@ impl SvcConfig {
             return Err(ErrorConfig::from_str("Missing section 'main' in ini file"));
         }
         let mainsection = &conf["main"];
-        if !mainsection.contains_key("session") {
-            return Err(ErrorConfig::from_string(format!(
-                "Missing value 'session' in [main] section ini file {}",
-                inifile
-            )));
-        };
-        let session = match mainsection["session"] {
-            None => {
-                return Err(ErrorConfig::from_str("No session specified"));
-            }
-            Some(ref s) => s,
-        };
-        if !conf.contains_key(session) {
-            return Err(ErrorConfig::from_string(format!(
-                "Missing section '{}' in ini file",
-                session
-            )));
-        };
-        let svcsection = &conf[session];
-
-        if !svcsection.contains_key("mode") {
-            return Err(ErrorConfig::from_string(format!(
-                "Missing value 'mode' in [{}] section ini file {}",
-                session, inifile
-            )));
-        };
-        let mode = match svcsection["mode"] {
-            None => {
-                return Err(ErrorConfig::from_str(
-                    "No mode (bgpactive|bgppassive|bmpactive|bmppassive) specified",
-                ));
-            }
-            Some(ref s) => s,
-        };
-        let peermode = mode.parse()?;
-        let bgppeer: Option<std::net::SocketAddr> = if svcsection.contains_key("bgppeer") {
-            match svcsection["bgppeer"] {
-                None => {
-                    return Err(ErrorConfig::from_str("invalid bgppeer was specified"));
-                }
-                Some(ref s) => match s.parse() {
-                    Err(_e) => {
-                        let peerip: std::net::IpAddr = match s.parse() {
-                            Err(_) => {
-                                return Err(ErrorConfig::from_str("invalid bgppeer was specified"));
-                            }
-                            Ok(v) => v,
-                        };
-                        Some(std::net::SocketAddr::new(peerip, 179))
-                    }
-                    Ok(a) => Some(a),
-                },
-            }
-        } else {
-            if peermode == PeerMode::BgpActive {
-                // fatal error
-                return Err(ErrorConfig::from_str("bgppeer was not specified"));
-            } else {
-                None
-            }
-        };
-        let bmppeer: Option<std::net::SocketAddr> = if svcsection.contains_key("bmppeer") {
-            match svcsection["bmppeer"] {
-                None => {
-                    return Err(ErrorConfig::from_str("invalid bmppeer was specified"));
-                }
-                Some(ref s) => match s.parse() {
-                    Err(_e) => {
-                        let peerip: std::net::IpAddr = match s.parse() {
-                            Err(_) => {
-                                return Err(ErrorConfig::from_str("invalid bmppeer was specified"));
-                            }
-                            Ok(v) => v,
-                        };
-                        Some(std::net::SocketAddr::new(peerip, 632))
-                    }
-                    Ok(a) => Some(a),
-                },
-            }
-        } else {
-            if peermode == PeerMode::BmpActive {
-                // fatal error
-                return Err(ErrorConfig::from_str("bmppeer was not specified"));
-            } else {
-                None
-            }
-        };
-        let protolisten: Option<std::net::SocketAddr> = if svcsection.contains_key("protolisten") {
-            match svcsection["protolisten"] {
-                None => {
-                    return Err(ErrorConfig::from_str("invalid protolisten was specified"));
-                }
-                Some(ref s) => match s.parse() {
-                    Err(_) => {
-                        let lip: std::net::IpAddr = match s.parse() {
-                            Err(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)),
-                            Ok(v) => v,
-                        };
-                        Some(std::net::SocketAddr::new(lip, 179))
-                    }
-                    Ok(a) => Some(a),
-                },
-            }
-        } else {
-            if peermode == PeerMode::BmpPassive || peermode == PeerMode::BgpPassive {
-                return Err(ErrorConfig::from_str("protolisten was not specified"));
-            } else {
-                None
-            }
-        };
-        let routerid: std::net::Ipv4Addr = if svcsection.contains_key("routerid") {
-            match svcsection["routerid"] {
-                None => {
-                    return Err(ErrorConfig::from_str("invalid routerid was specified"));
-                }
-                Some(ref s) => match s.parse() {
-                    Err(e) => {
-                        return Err(ErrorConfig::from_string(format!(
-                            "Invalid routerid - {}",
-                            e
-                        )));
-                    }
-                    Ok(a) => a,
-                },
-            }
-        } else {
-            match "1.1.1.1".parse() {
-                Err(e) => {
-                    return Err(ErrorConfig::from_string(format!(
-                        "Invalid routerid - {}",
-                        e
-                    )));
-                }
-                Ok(a) => a,
-            }
-        };
-        let bgppeeras: u32 = if svcsection.contains_key("peeras") {
-            match svcsection["peeras"] {
-                None => {
-                    return Err(ErrorConfig::from_str("invalid bgppeeras was specified"));
-                }
-                Some(ref s) => match s.parse() {
-                    Err(e) => {
-                        return Err(ErrorConfig::from_string(format!(
-                            "Invalid bgp peer as - {}",
-                            e
-                        )));
-                    }
-                    Ok(a) => a,
-                },
-            }
-        } else {
-            0
-        };
+        let peers: Vec<Arc<ProtoPeer>> = conf
+            .iter()
+            .filter(|x| x.0 != "main")
+            .filter_map(|x| ProtoPeer::from_ini(x.1).ok())
+            .map(|x| Arc::new(x))
+            .collect();
+        if peers.len() < 1 {
+            return Err(ErrorConfig::from_str("No valid peers or listens specified"));
+        }
         let httplisten: std::net::SocketAddr = match (if mainsection.contains_key("httplisten") {
             match mainsection["httplisten"] {
                 Some(ref s) => s.to_string(),
@@ -345,11 +365,16 @@ impl SvcConfig {
         let purge_after_withdraws: u64 = if mainsection.contains_key("purge_after_withdraws") {
             match mainsection["purge_after_withdraws"] {
                 None => {
-                    return Err(ErrorConfig::from_str("invalid purge_after_withdraws was specified"));
+                    return Err(ErrorConfig::from_str(
+                        "invalid purge_after_withdraws was specified",
+                    ));
                 }
                 Some(ref s) => match s.parse() {
                     Err(e) => {
-                        return Err(ErrorConfig::from_string(format!("Invalid purge_after_withdraws - {}", e)));
+                        return Err(ErrorConfig::from_string(format!(
+                            "Invalid purge_after_withdraws - {}",
+                            e
+                        )));
                     }
                     Ok(a) => a,
                 },
@@ -364,7 +389,10 @@ impl SvcConfig {
                 }
                 Some(ref s) => chrono::Duration::seconds(match s.parse() {
                     Err(e) => {
-                        return Err(ErrorConfig::from_string(format!("Invalid purge_every - {}", e)));
+                        return Err(ErrorConfig::from_string(format!(
+                            "Invalid purge_every - {}",
+                            e
+                        )));
                     }
                     Ok(a) => a,
                 }),
@@ -430,14 +458,9 @@ impl SvcConfig {
             }
         };
         if dnses.is_empty() {
-            dnses.push("1.1.1.1:53".parse().unwrap());
+            dnses.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53));
         };
         Ok(SvcConfig {
-            routerid: routerid,
-            bgppeer: bgppeer,
-            bmppeer: bmppeer,
-            protolisten: protolisten,
-            bgppeeras: bgppeeras,
             httplisten: httplisten,
             httptimeout: httptimeout,
             httproot: httproot,
@@ -448,9 +471,9 @@ impl SvcConfig {
             whoisdnses: dnses,
             whoisreqtimeout: whoisreqtimeout,
             whoiscachesecs: whoiscachesecs,
-            peermode: peermode,
             purge_after_withdraws: purge_after_withdraws,
-            purge_every: purge_every
+            purge_every: purge_every,
+            peers: peers,
         })
     }
 }

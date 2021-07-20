@@ -1,10 +1,10 @@
 use crate::bgprib::{BgpAttrHistory, BgpAttrs, BgpRIBKey, BgpRIBSafi};
 use zettabgp::prelude::*;
+use crate::config::*;
 use std::ops::RangeInclusive;
 use std::collections::BTreeSet;
 
 use regex::Regex;
-
 pub struct SortIter<T> {
     sorted: Vec<T>,
 }
@@ -1467,6 +1467,7 @@ impl FilterTerm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::rc::Rc;
 
     #[test]
     fn test_ribfilter_fi_ipv4_host() {
@@ -1682,6 +1683,7 @@ mod tests {
         let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10,HistoryChangeMode::EveryUpdate);
         let attrs = std::rc::Rc::new(BgpAttrs::new());
         safi.handle_updates_afi(
+            0,
             vec![
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(11, 0, 0, 1), 32),
@@ -1709,6 +1711,7 @@ mod tests {
         let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10,HistoryChangeMode::EveryUpdate);
         let attrs = std::rc::Rc::new(BgpAttrs::new());
         safi.handle_updates_afi(
+            0,
             vec![
                 WithRd::<BgpAddrV4>::new(
                     BgpRD::new(100, 1000),
@@ -1759,6 +1762,7 @@ mod tests {
         let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10,HistoryChangeMode::EveryUpdate);
         let attrs = std::rc::Rc::new(BgpAttrs::new());
         safi.handle_updates_afi(
+            0,
             vec![
                 WithRd::<BgpAddrV4>::new(
                     BgpRD::new(100, 1000),
@@ -1812,6 +1816,7 @@ mod tests {
                 localpref: None,
             };
             safi.handle_updates_afi(
+                0,
                 vec![
                     WithRd::<BgpAddrV4>::new(
                         BgpRD::new(100, 1000),
@@ -1853,6 +1858,7 @@ mod tests {
                 pmsi_ta: None,
             };
             safi.handle_updates_afi(
+                0,
                 vec![
                     WithRd::<BgpAddrV4>::new(
                         BgpRD::new(100, 1000),
@@ -1923,6 +1929,7 @@ mod tests {
             localpref: None,
         };
         safi.handle_updates_afi(
+            0,
             vec![
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(11, 0, 0, 1), 32),
@@ -1965,6 +1972,7 @@ mod tests {
             localpref: None,
         };
         safi.handle_updates_afi(
+            0,
             vec![
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(11, 0, 0, 1), 32),
@@ -2005,6 +2013,7 @@ mod tests {
             localpref: None,
         };
         safi.handle_updates_afi(
+            0,
             vec![
                 Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![1]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,1), BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 255), 32) ) ),
                 Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![2]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,1), BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32) ) ),

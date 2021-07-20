@@ -26,6 +26,7 @@ use bgpsvc::*;
 mod whoissvc;
 use whoissvc::*;
 mod config;
+use config::*;
 mod ribfilter;
 mod ribservice;
 mod tojson;
@@ -118,7 +119,7 @@ impl Svc {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conf = match SvcConfig::from_inifile("bgpexplorer.ini") {
-        Ok(sc) => sc,
+        Ok(sc) => Arc::new(sc),
         Err(e) => {
             eprintln!("{}", e);
             return Ok(());
@@ -137,9 +138,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tck1 = {
         let mut _svr = msvr.clone();
-        let pmode = conf.peermode.clone();
         tokio::spawn(async move {
-            _svr.run(pmode).await;
+            _svr.run().await;
         })
     };
     {

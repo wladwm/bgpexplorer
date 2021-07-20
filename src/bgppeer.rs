@@ -8,6 +8,7 @@ pub struct BgpPeer<'a, H: BgpUpdateHandler> {
     params: BgpSessionParams,
     peersock: tokio::net::TcpStream,
     keepalive_sent: DateTime<Local>,
+    sessionid: BgpSessionId,
     update_handler: &'a H,
 }
 
@@ -17,13 +18,15 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
         stream: tokio::net::TcpStream,
         handler: &'a H,
     ) -> BgpPeer<'a, H> {
+        let peerip=stream.peer_addr().unwrap().ip();
         let mut ret = BgpPeer::<H> {
             params: pars,
             peersock: stream,
             keepalive_sent: Local::now(),
             update_handler: handler,
+            sessionid: 0
         };
-        ret.params.peer_mode = if ret.peersock.peer_addr().unwrap().ip().is_ipv4() {
+        ret.params.peer_mode = if peerip.is_ipv4() {
             BgpTransportMode::IPv4
         } else {
             BgpTransportMode::IPv6
@@ -203,7 +206,10 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                         eprintln!("BGP update decode error: {:?}", e);
                         continue;
                     }
-                    self.update_handler.handle_update(msgupdate).await;
+                    if self.sessionid == 0 {
+                        self.sessionid=self.update_handler.register_session(self.peersock.peer_addr().unwrap().ip(),std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)).await;
+                    }
+                    self.update_handler.handle_update(self.sessionid,msgupdate).await;
                 }
             }
         }

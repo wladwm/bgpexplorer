@@ -48,8 +48,8 @@ $ cat > bgpexplorer.ini <<EOF
 [main]
 httplisten=0.0.0.0:8080
 httproot=contrib
-session=s0
 whoisjsonconfig=whois.json
+
 [s0]
 mode=bgpactive
 bgppeer=10.0.0.1
@@ -77,7 +77,7 @@ Or vpnv4 unicast:
 ## Configuration
 
 bgpexplorer looks for configuration in file bgpexplorer.ini in current directory.
-This file have on [main] section and peer section
+This file should have [main] section and peer sections with any other names
 Main section parameters:
 * httplisten - bind address and port for inner http server, default 0.0.0.0:8080.
 * httproot - path for http server files serving root, default "./contrib/".
@@ -87,7 +87,6 @@ Main section parameters:
 * historymode - differ/every. differ - record history event only if some attributes changed. every - anyway record history event.
 * purge_after_withdraws - garbage collect after specified number of withdraws. 0 - turned off, this setting is by default.
 * purge_every - garbage collect every N seconds. Default setting is 5 minutes.
-* session - name for service section, see below.
 
 Service section parameters:
 * mode - protocol mode, can be bgpactive,bgppassive,bmpactive or bmppassive. bgp or bmp means protocol, active or passive determines which side will initiate session.
@@ -96,6 +95,7 @@ Service section parameters:
 * protolisten - TCP endpoint for bgp/bmp passived mode. Should be IP:port form. Please note that you will not be able to run process listening port number below 1024 in *nix OS if you are not root without special tricks.
 * routerid - BGP router ID, if not specified, default value 1.1.1.1 will be used.
 * peeras - BGP AS number for bgpactive.
+* filter_rd - With BMP session this parametr will filter watching BGP session matching this RD. Default is 0:0 (global vrf).
 
 BTW, builtin whois proxy allows you to see some info about AS and hosts:
 ![alt text](screenshots/bgpexp_whois.png "whois query")​
