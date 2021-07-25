@@ -53,7 +53,6 @@ impl serde::Serialize for BgpAttrEntry {
     {
         let mut state = serializer.serialize_struct("BgpAttrEntry", 4)?;
         state.serialize_field("active", &self.active)?;
-        state.serialize_field("sessionid", &self.sessionid)?;
         state.serialize_field::<BgpAttrs>("attrs", &self.attrs)?;
         if let Some(ref lbls) = self.labels {
             state.serialize_field("labels", lbls)?;
@@ -69,6 +68,30 @@ impl serde::Serialize for BgpAttrHistory {
         let mut state = serializer.serialize_map(Some(self.items.len()))?;
         for (k, v) in self.items.iter() {
             state.serialize_entry(&k.format("%Y-%m-%dT%H:%M:%S").to_string(), v)?;
+        }
+        state.end()
+    }
+}
+impl serde::Serialize for BgpPathEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_map(Some(self.items.len()))?;
+        for (k, v) in self.items.iter() {
+            state.serialize_entry(k, v)?;
+        }
+        state.end()
+    }
+}
+impl serde::Serialize for BgpSessionEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_map(Some(self.items.len()))?;
+        for (k, v) in self.items.iter() {
+            state.serialize_entry(k, v)?;
         }
         state.end()
     }

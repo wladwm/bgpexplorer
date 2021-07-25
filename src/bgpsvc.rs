@@ -6,6 +6,7 @@ use crate::*;
 use async_trait::async_trait;
 use hyper::{Body, Request, Response, StatusCode};
 use serde::ser::{SerializeMap, SerializeStruct};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
 use std::thread::JoinHandle;
@@ -14,25 +15,92 @@ use tokio::net::TcpSocket;
 use tokio::sync::mpsc::*;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
+use zettabgp::bmp::prelude::*;
 use zettabgp::prelude::*;
 
 pub type BgpSessionId = u16;
 #[async_trait]
 pub trait BgpUpdateHandler {
     async fn handle_update(&self, peerid: BgpSessionId, upd: BgpUpdateMessage);
-    async fn register_session(&self, peer1addr: IpAddr, peer2addr: IpAddr) -> BgpSessionId;
+    async fn register_session(&self, sess: Arc<BgpSessionDesc>) -> BgpSessionId;
 }
-#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone)]
+#[derive(Hash, Eq, Ord, Debug, Clone)]
+pub struct BgpPeerDesc {
+    pub addr: IpAddr,
+    pub bom: BgpOpenMessage,
+}
+impl BgpPeerDesc {
+    pub fn new(addr: IpAddr, bom: BgpOpenMessage) -> BgpPeerDesc {
+        BgpPeerDesc {
+            addr: addr,
+            bom: bom,
+        }
+    }
+}
+impl PartialOrd for BgpPeerDesc {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self.addr.partial_cmp(&other.addr) {
+            None => self.bom.as_num.partial_cmp(&other.bom.as_num),
+            Some(pc) => match pc {
+                Ordering::Less => Some(Ordering::Less),
+                Ordering::Greater => Some(Ordering::Greater),
+                Ordering::Equal => self.bom.as_num.partial_cmp(&other.bom.as_num),
+            },
+        }
+    }
+}
+impl PartialEq for BgpPeerDesc {
+    fn eq(&self, other: &Self) -> bool {
+        self.addr.eq(&other.addr) && self.bom.as_num == other.bom.as_num
+    }
+}
+#[derive(Hash, Eq, Ord, Debug, Clone)]
 pub struct BgpSessionDesc {
-    pub peer1: IpAddr,
-    pub peer2: IpAddr,
+    pub peer1: BgpPeerDesc,
+    pub peer2: BgpPeerDesc,
 }
 impl BgpSessionDesc {
-    pub fn new(peer1addr: IpAddr, peer2addr: IpAddr) -> BgpSessionDesc {
+    pub fn new(peer1: BgpPeerDesc, peer2: BgpPeerDesc) -> BgpSessionDesc {
         BgpSessionDesc {
-            peer1: peer1addr,
-            peer2: peer2addr,
+            peer1: peer1,
+            peer2: peer2,
         }
+    }
+    pub fn from_bmppeerup(pu: &BmpMessagePeerUp) -> BgpSessionDesc {
+        BgpSessionDesc {
+            peer1: BgpPeerDesc::new(pu.localaddress.clone(), pu.msg1.clone()),
+            peer2: BgpPeerDesc::new(pu.peer.peeraddress.clone(), pu.msg2.clone()),
+        }
+    }
+}
+impl PartialOrd for BgpSessionDesc {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        let mut sp1 = &self.peer1;
+        let mut sp2 = &self.peer2;
+        if sp2 < sp1 {
+            sp1 = &self.peer2;
+            sp2 = &self.peer1;
+        }
+        let mut op1 = &other.peer1;
+        let mut op2 = &other.peer2;
+        if op2 < op1 {
+            op1 = &other.peer2;
+            op2 = &other.peer1;
+        }
+        match sp1.partial_cmp(op1) {
+            None => sp2.partial_cmp(op2),
+            Some(pc) => match pc {
+                Ordering::Less => Some(Ordering::Less),
+                Ordering::Greater => Some(Ordering::Greater),
+                Ordering::Equal => sp2.partial_cmp(op2),
+            },
+        }
+    }
+}
+impl PartialEq for BgpSessionDesc {
+    fn eq(&self, other: &Self) -> bool {
+        (self.peer1.eq(&other.peer1) && self.peer2.eq(&other.peer2))
+            || (self.peer1.eq(&other.peer2) && self.peer2.eq(&other.peer1))
     }
 }
 struct BgpSessionStorage {
@@ -46,15 +114,12 @@ impl BgpSessionStorage {
             ss_addrs: BTreeMap::new(),
         }
     }
-    fn register_session(&mut self, peer1addr: IpAddr, peer2addr: IpAddr) -> BgpSessionId {
-        let sessdsc = Arc::new(BgpSessionDesc::new(peer1addr, peer2addr));
-        if let Some(x) = self.ss_addrs.get_key_value(&sessdsc) {
+    fn register_session(&mut self, sess: Arc<BgpSessionDesc>) -> BgpSessionId {
+        if let Some(x) = self.ss_addrs.get_key_value(&sess) {
             return *x.1;
         }
-        if let Some(x) = self
-            .ss_addrs
-            .get_key_value(&BgpSessionDesc::new(peer2addr, peer1addr))
-        {
+        let sessdsc = Arc::new(BgpSessionDesc::new(sess.peer2.clone(), sess.peer1.clone()));
+        if let Some(x) = self.ss_addrs.get_key_value(&sessdsc) {
             return *x.1;
         }
         let mut nid: BgpSessionId = (self.ss_ids.len() + 1) as BgpSessionId;
@@ -85,11 +150,8 @@ impl BgpUpdateHandler for BgpSvr {
             },
         };
     }
-    async fn register_session(&self, peer1addr: IpAddr, peer2addr: IpAddr) -> BgpSessionId {
-        self.sessions
-            .write()
-            .await
-            .register_session(peer1addr, peer2addr)
+    async fn register_session(&self, sess: Arc<BgpSessionDesc>) -> BgpSessionId {
+        self.sessions.write().await.register_session(sess)
     }
 }
 impl BgpSvr {
@@ -102,6 +164,45 @@ impl BgpSvr {
             upd: None,
             updater: None,
         }
+    }
+    fn def_caps(asn: u32) -> Vec<BgpCapability> {
+        vec![
+            BgpCapability::SafiIPv4u,
+            BgpCapability::SafiIPv4fu,
+            BgpCapability::SafiVPNv4fu,
+            BgpCapability::SafiIPv4m,
+            BgpCapability::SafiIPv4lu,
+            BgpCapability::SafiIPv6lu,
+            BgpCapability::SafiIPv6fu,
+            BgpCapability::SafiVPNv4u,
+            BgpCapability::SafiVPNv4m,
+            BgpCapability::SafiVPNv6u,
+            BgpCapability::SafiVPNv6m,
+            BgpCapability::SafiIPv4mvpn,
+            BgpCapability::SafiVPLS,
+            BgpCapability::SafiEVPN,
+            BgpCapability::CapASN32(asn),
+            BgpCapability::CapAddPath(
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv4u, true, true).unwrap(),
+            ),
+            /*
+            BgpCapability::CapAddPath(
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv4lu, true, true).unwrap(),
+            ),
+            BgpCapability::CapAddPath(
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv6u, true, true).unwrap(),
+            ),
+            BgpCapability::CapAddPath(
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv6lu, true, true).unwrap(),
+            ),
+            BgpCapability::CapAddPath(
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiVPNv4u, true, true).unwrap(),
+            ),
+            BgpCapability::CapAddPath(
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiVPNv6u, true, true).unwrap(),
+            ),
+            */
+        ]
     }
     pub async fn start_updates(&mut self) {
         if let Some(_) = self.updater {
@@ -162,24 +263,7 @@ impl BgpSvr {
                                 BgpTransportMode::IPv6
                             },
                             fpeer.routerid,
-                            vec![
-                                BgpCapability::SafiIPv4u,
-                                BgpCapability::SafiIPv4m,
-                                BgpCapability::SafiIPv4lu,
-                                BgpCapability::SafiIPv6lu,
-                                BgpCapability::SafiVPNv4u,
-                                BgpCapability::SafiVPNv4m,
-                                BgpCapability::SafiVPNv6u,
-                                BgpCapability::SafiVPNv6m,
-                                BgpCapability::SafiIPv4mvpn,
-                                BgpCapability::SafiVPLS,
-                                BgpCapability::SafiEVPN,
-                                BgpCapability::SafiIPv4fu,
-                                BgpCapability::SafiIPv6fu,
-                                BgpCapability::CapASN32(fpeer.bgppeeras),
-                            ]
-                            .into_iter()
-                            .collect(),
+                            Self::def_caps(fpeer.bgppeeras),
                         ),
                         client.0,
                         &*self,
@@ -234,25 +318,7 @@ impl BgpSvr {
                             SocketAddr::V6(_) => BgpTransportMode::IPv6,
                         },
                         fpeer.routerid,
-                        vec![
-                            BgpCapability::SafiIPv4u,
-                            BgpCapability::SafiIPv4fu,
-                            BgpCapability::SafiVPNv4fu,
-                            BgpCapability::SafiIPv4m,
-                            BgpCapability::SafiIPv4lu,
-                            BgpCapability::SafiIPv6lu,
-                            BgpCapability::SafiIPv6fu,
-                            BgpCapability::SafiVPNv4u,
-                            BgpCapability::SafiVPNv4m,
-                            BgpCapability::SafiVPNv6u,
-                            BgpCapability::SafiVPNv6m,
-                            BgpCapability::SafiIPv4mvpn,
-                            BgpCapability::SafiVPLS,
-                            BgpCapability::SafiEVPN,
-                            BgpCapability::CapASN32(fpeer.bgppeeras),
-                        ]
-                        .into_iter()
-                        .collect(),
+                        Self::def_caps(fpeer.bgppeeras),
                     ),
                     peertcp,
                     &*self,
@@ -428,7 +494,7 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
             .skip(self.params.skip)
             .take(self.params.limit)
         {
-            state.serialize_entry::<std::string::String, BgpAttrHistory>(&k.to_string(), v)?;
+            state.serialize_entry(&k.to_string(), &v)?;
             cnt += 1;
         }
         if cnt < 1 {
@@ -453,7 +519,7 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
             .skip(self.params.skip)
             .take(self.params.limit)
             {
-                state.serialize_entry::<std::string::String, BgpAttrHistory>(&k.to_string(), v)?;
+                state.serialize_entry(&k.to_string(), &v)?;
                 cnt += 1;
             }
         }
@@ -501,6 +567,18 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
         state.serialize_field("onlyactive", &self.params.onlyactive)?;
         state.serialize_field("found", &self.items.count())?;
         state.serialize_field("items", &self.items)?;
+        state.end()
+    }
+}
+
+impl serde::Serialize for BgpPeerDesc {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("BgpPeerDesc", 2)?;
+        state.serialize_field("addr", &self.addr)?;
+        state.serialize_field("as_num", &self.bom.as_num)?;
         state.end()
     }
 }

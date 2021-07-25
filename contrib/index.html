@@ -6,6 +6,7 @@
   <meta http-equiv="content-type" content="text/html; charset=utf8">
   <script type="text/javascript">
     var cnt_queries_running = 0;
+    var show_default_extra = false;
     class ApiQuery {
       debounce_timeout = null;
       xhr = null;
@@ -97,7 +98,11 @@
     var queryRib = new ApiQuery();
     var queryStatistics = new ApiQuery();
     var querySessions = new ApiQuery();
-
+    function hidePopup() {
+      let ppup = document.getElementById('wnd');
+      if (!ppup) return;
+      ppup.style.display = 'none';
+    }
     function gopage(n) {
       skip = n * pagesize;
       ExecuteQuery();
@@ -116,12 +121,15 @@
     function escapeASN(asn) {
       return "<bgp-as val='" + asn + "'></bgp-as>";
     }
-    function textSession(sessid) {
-      let sess=bgp_sessions[sessid];
-      return sess["peer1"]+'-'+sess["peer2"];
+    function textPeer(peer) {
+      return peer["addr"] + ' AS' + peer["as_num"];
     }
-    function textAttrs(attr) {
-      let rtxt = '<div>';
+    function textSession(sessid) {
+      let sess = bgp_sessions[sessid];
+      return textPeer(sess["peer1"]) + '-' + textPeer(sess["peer2"]);
+    }
+    function textAttrs(attr, divo, divc) {
+      let rtxt = divo;
       if ("med" in attr) {
         rtxt += "MED: " + attr["med"] + ", ";
       };
@@ -131,43 +139,101 @@
       if ("nexthop" in attr) {
         rtxt += "from " + escapeIpAddr(attr["nexthop"]);
       };
-      rtxt += "</div><div>";
+      rtxt += divc + divo;
       if ("aspath" in attr) {
         rtxt += "AS path: " + attr["aspath"].map(escapeASN).join(" ");
       };
       if ("origin" in attr) {
         rtxt += " " + attr["origin"];
       };
+      rtxt += divc;
       if ("communities" in attr || "extcommunities" in attr) {
-        rtxt += "<div>Communities:";
+        rtxt += divo + "Communities:";
         if ("communities" in attr) {
           rtxt += " " + escapeHTML(attr["communities"].join(" "));
         };
         if ("extcommunities" in attr) {
           rtxt += " " + escapeHTML(attr["extcommunities"].join(" "));
         };
-        rtxt += "</div>";
+        rtxt += divc;
       };
       if ("originator" in attr) {
-        rtxt += "<div>Originator: " + escapeIpAddr(attr["originator"]) + "</div>";
+        rtxt += divo + "Originator: " + escapeIpAddr(attr["originator"]) + divc;
       };
       if ("atomicaggregate" in attr) {
-        rtxt += "<div>Atomic aggregate: " + escapeHTML(attr["atomicaggregate"]) + "</div>";
+        rtxt += divo + "Atomic aggregate: " + escapeHTML(attr["atomicaggregate"]) + divc;
       };
       if ("aggregatoras" in attr) {
         let aa = attr["aggregatoras"];
-        rtxt += "<div>Aggregator: " + escapeIpAddr(aa["addr"]) + " " + escapeASN(aa["asn"]) + "</div>";
+        rtxt += divo + "Aggregator: " + escapeIpAddr(aa["addr"]) + " " + escapeASN(aa["asn"]) + divc;
       };
       if ("clusterlist" in attr) {
-        rtxt += "<div>Cluster list: " + attr["clusterlist"].map(escapeIpAddr).join(" ") + "</div>";
+        rtxt += divo + "Cluster list: " + attr["clusterlist"].map(escapeIpAddr).join(" ") + divc;
       };
       if ("pmsi_tunnel_attributes" in attr) {
-        rtxt += "<div>PMSI tunnel: " + escapeHTML(attr["pmsi_tunnel_attributes"]) + "</div>";
+        rtxt += divo + "PMSI tunnel: " + escapeHTML(attr["pmsi_tunnel_attributes"]) + divc;
       }
       return rtxt;
     }
     function showTime(tms) {
       return ("" + tms).replaceAll("T", " ");
+    }
+    function showAttr(route, sessionid, pathid, curtime, currec) {
+      let rtxt = '';
+      let div = "<div class='attr-text" + (currec['active'] ? "" : " inactive") + "'>";
+      rtxt += div + showTime(curtime) + "</div>";
+      rtxt += textAttrs(currec["attrs"], div, "</div>");
+      if ("labels" in currec) {
+        rtxt += div + "Labels: " + currec["labels"] + "</div>";
+      }
+      return rtxt;
+    }
+    function showPath(route, sessionid, pathid, hist) {
+      let rtxt = "";
+      let times = Object.keys(hist).sort((a1, a2) => {
+        if (a1 < a2) return 1;
+        if (a1 > a2) return -1;
+        return 0;
+      });
+      let curtime = times[0];
+      let currec = hist[curtime];
+      rtxt += "<div class='attr-container'>";
+      rtxt += "<div class='attr-item'>";
+      rtxt += showAttr(route, sessionid, pathid, curtime, currec);
+      rtxt += '</div>';
+      if (times.length > 1) {
+        rtxt += "<div class='attr-item'><button class='imgbutton' OnClick='FlipHist(event)'><img src='utd.png'></button></div>";
+        rtxt += "<div class='attr-container' style='display:none'>";
+        for (i = 1; i < times.length; i++) {
+          let curtime = times[i];
+          let currec = hist[curtime];
+          rtxt += "<div class='attr-item'>";
+          rtxt += showAttr(route, sessionid, pathid, curtime, currec);
+          rtxt += "</div>";
+        }
+        rtxt += "</div>";
+      }
+      rtxt += "</div>";
+      return rtxt;
+    }
+    function showSession(route, sessid, session) {
+      let rtxt = '';
+      let pathids = Object.keys(session);
+
+      pathids.forEach((pathid) => {
+        rtxt += "<div class='path-container'" + ((!show_default_extra && pathid != pathids[0]) ? " style='display:none'" : '') + ">";
+        if (pathids.length > 1) {
+          rtxt += "<div class='path-head'>pathid: " + escapeHTML(pathid);
+          if (pathid == pathids[0]) {
+            rtxt += "<button class='imgbutton' OnClick='FlipPathSec(event)'><img src='" + (show_default_extra ? 'rtl' : 'ltr') + ".png'></button>";
+          }
+          rtxt += "</div>";
+        }
+        rtxt += "<div class='path-body'>";
+        rtxt += showPath(route, sessid, pathid, session[pathid]);
+        rtxt += '</div></div>';
+      });
+      return rtxt;
     }
     function showRoutes(rtext) {
       let result = null;
@@ -205,57 +271,37 @@
         });
         rtxt += '</div>';
       }
-      rtxt += '<table class="rtbl" cellspacing=2 cellpadding=2 width=100% border=0 style="border-collapse:collapse"><colgroup><col width=100 valign=top><col></colgroup>';
+      rtxt += "<div class='result-container'>";
       let rcnt = 0;
+      let bgpsessids = Object.keys(bgp_sessions);
       Object.keys(result.items).forEach((route) => {
-        let hist = result.items[route];
-        let times = Object.keys(hist).sort((a1, a2) => {
-          if (a1 < a2) return 1;
-          if (a1 > a2) return -1;
-          return 0;
-        });
-        let curtime = times[0];
-        let currec = hist[curtime];
-        let curactive = currec["active"];
-        rtxt += '<tr><td' + (curactive ? '' : ' class=inactive') + '>' + escapeHTML(route) + '</td><td' + (curactive ? '' : ' class=inactive') + '>';
-        rtxt += "<div>" + showTime(curtime) + "</div><div>" + textAttrs(currec["attrs"]) + "</div>";
-        if ("labels" in currec) {
-          rtxt += "<div>Labels: " + currec["labels"] + "</div>";
-        }
-        if(Object.keys(bgp_sessions).length>1) {
-          rtxt += "<div>Session: "+textSession(currec["sessionid"])+"</div>"
-        }
-        if (times.length > 1) {
-          rtxt += "<div><button OnClick='Flip(\"hist" + rcnt + "\")'>v</button></div>";
-          rtxt += "<div style='display:none' id='hist" + rcnt + "'><table class=hist>";
-          for (i = 1; i < times.length; i++) {
-            let curtime = times[i];
-            let currec = hist[curtime];
-            let curactive = currec["active"];
-            rtxt += "<tr><td" + (curactive ? '' : ' class=inactive') + ">";
-            rtxt += "<div>" + showTime(curtime) + "</div><div>" + textAttrs(currec["attrs"]) + "</div>";
-            if ("labels" in currec) {
-              rtxt += "<div>Labels: " + currec["labels"] + "</div>";
+        rtxt += "<div class='route-container'><div class='route-nlri'>" + escapeHTML(route) + "</div>";
+        let sessions = result.items[route];
+        let sessids = Object.keys(sessions);
+        sessids.forEach((sessionid) => {
+          rtxt += "<div class='session-container'" + ((!show_default_extra && sessionid != sessids[0]) ? " style='display:none'" : '') + ">";
+          if (bgpsessids.length > 1) {
+            rtxt += "<div class='session-head'>" + textSession(sessionid);
+            if (sessids.length > 1 && sessionid == sessids[0]) {
+              rtxt += "<button class='imgbutton' OnClick='FlipSessionSec(event)'><img src='" + (show_default_extra ? 'rtl' : 'ltr') + ".png'></button>";
             }
-            if(Object.keys(bgp_sessions).length>1) {
-             rtxt += "<div>Session: "+textSession(currec["sessionid"])+"</div>"
-            }
-            rtxt += "</td></tr>";
+            rtxt += "</div>";
           }
-          rtxt += "</table></div>";
-        }
-        rtxt += "</td></tr>\n";
+          rtxt += "<div class='session-body'>"
+          rtxt += showSession(route, sessionid, sessions[sessionid]);
+          rtxt += "</div></div>";
+        });
+        rtxt += "</div>\n";
         rcnt++;
       });
-      rdiv.innerHTML = rtxt + '</table>';
-
+      rdiv.innerHTML = rtxt + '</div>';
     }
-
     function ExecuteQuery() {
       let filterval = document.getElementById('filtertext').value;
       let url = 'api/json/' + active_rib + '?skip=' + skip + '&limit=' + pagesize + '&filter=' + encodeURI(filterval);
       queryRib.Query((event) => {
         try {
+          hidePopup();
           showRoutes(event.target.responseText);
         } catch (err) {
           //queryRib.executeQuery();
@@ -264,7 +310,8 @@
       }, url);
     };
     function OnQueryBtn() {
-      queryRib.debounce_time=1;
+      queryRib.debounce_time = 1;
+      hidePopup();
       ExecuteQuery();
     }
     function OnFilterChange() {
@@ -284,7 +331,9 @@
       ExecuteQuery();
     }
     function OnRefreshStats() {
+      hidePopup();
       if (!("ribs" in server_statistics)) {
+        setTimeout(() => { CheckStat(); }, 1000);
         return;
       }
       let activeribs = new Array();
@@ -311,7 +360,10 @@
           return ret;
         }).join(" | ");
       }
-      if (rbs.length<1) rbs="No RIBs yet...";
+      if (rbs.length < 1) {
+        rbs = "No RIBs yet...";
+        setTimeout(() => { CheckStat(); }, 1000);
+      }
       document.getElementById('ribs').innerHTML = rbs;
       if (!actribfound) {
         active_rib = frib;
@@ -323,20 +375,85 @@
       queryStatistics.Query((event) => {
         try {
           server_statistics = JSON.parse(event.target.responseText);
-          querySessions.Query((event) => {
-           try {
-            bgp_sessions = JSON.parse(event.target.responseText);
-            OnRefreshStats();
-           } catch (err) {
-            querySessions.executeQuery();
-            return;
-           }
-          }, "api/sessions");
+          if (bgp_sessions) OnRefreshStats();
         } catch (err) {
           queryStatistics.executeQuery();
           return;
         }
       }, "api/statistics");
+      querySessions.Query((event) => {
+        try {
+          bgp_sessions = JSON.parse(event.target.responseText);
+          if (server_statistics) OnRefreshStats();
+        } catch (err) {
+          querySessions.executeQuery();
+          return;
+        }
+      }, "api/sessions");
+    }
+    function showFlexElem(elm, show) {
+      elm.style.display = show ? 'inline-flex' : 'none';
+    }
+    function showItemsSec(cntr, show) {
+      if (cntr.length < 2) return;
+      for (let i = 1; i < cntr.length; i++) {
+        showFlexElem(cntr[i], show);
+      }
+    }
+    function findParentClass(elm, className) {
+      while (!elm.classList.contains(className)) {
+        elm = elm.parentNode;
+      }
+      return elm;
+    }
+    function getBtnImg(elm) {
+      let img = elm;
+      if (img.tagName != "IMG") {
+        let imgs = elm.querySelectorAll("IMG");
+        if (imgs.length < 1) return null;
+        img = imgs[0];
+      }
+      return img;
+    }
+    function getImgPng(img) {
+      if (!img) return "";
+      if (!img.src) return "";
+      let mtch = img.src.match(/([a-z]+)\.png$/);
+      if (mtch.length != 2) {
+        return "";
+      }
+      return mtch[1];
+    }
+    function FlipSessionSec(event) {
+      let btn = event.target;
+      let btnimg = getBtnImg(btn);
+      let imgpng = getImgPng(btnimg);
+      let act_show = imgpng != "rtl";
+      let routeCont = findParentClass(btn, 'route-container');
+      let sessConts = routeCont.querySelectorAll("div.session-container");
+      showItemsSec(sessConts, act_show);
+      btnimg.src = act_show ? "rtl.png" : "ltr.png";
+    }
+    function FlipPathSec(event) {
+      let btn = event.target;
+      let btnimg = getBtnImg(btn);
+      let imgpng = getImgPng(btnimg);
+      let act_show = imgpng != "rtl";
+      let sessBody = findParentClass(btn, 'session-container');
+      let pathConts = sessBody.querySelectorAll("div.path-container");
+      showItemsSec(pathConts, act_show);
+      btnimg.src = act_show ? "rtl.png" : "ltr.png";
+    }
+    function FlipHist(event) {
+      let btn = event.target;
+      let btnimg = getBtnImg(btn);
+      let imgpng = getImgPng(btnimg);
+      let act_show = imgpng != "dtu";
+      console.log(btn);
+      let histDiv = findParentClass(btn, 'attr-container').querySelectorAll("div.attr-container")[0];
+      console.log(histDiv);
+      showFlexElem(histDiv, act_show);
+      btnimg.src = act_show ? "dtu.png" : "utd.png";
     }
   </script>
   <script type="text/javascript">
@@ -428,49 +545,39 @@
     customElements.define("ip-addr", IpAddr);
   </script>
   <style>
-    TABLE.rtbl TR TD {
-      vertical-align: top;
-      font-family: monospace;
+    body {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 8pt;
     }
 
-    TABLE.rtbl TR:nth-child(even) {
-      background: #e0f0f0
+    p {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 8pt;
     }
 
-    TABLE.rtbl TR TD.inactive {
-      vertical-align: top;
-      font-family: monospace;
-      font-style: italic;
-      color: #707070;
+    div {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 8pt;
     }
 
-    TABLE.hist TR TD {
-      vertical-align: top;
-      font-family: monospace;
-      font-style: normal;
-      color: #000000;
+    ul {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 8pt;
     }
 
-    TABLE.hist TR {
-      background: #f0f0e0
+    li {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 8pt;
     }
 
-    TABLE.hist TR:nth-child(even) {
-      background: #f0e0f0
+    input {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 8pt;
     }
 
-    TABLE.hist TR TD.inactive {
-      vertical-align: top;
-      font-family: monospace;
-      font-style: normal;
-      color: #707070;
-    }
-
-    TABLE.hist TR TD {
-      vertical-align: top;
-      font-family: monospace;
-      font-style: normal;
-      color: #000000;
+    button {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 8pt;
     }
 
     .graybox {
@@ -481,6 +588,117 @@
       padding: 0px;
       margin: 0px;
       border: 1px solid;
+    }
+
+    .result-container {
+      display: -webkit-flex;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+    }
+
+    .route-container {
+      display: -webkit-flex;
+      display: flex;
+      flex-direction: row;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .route-container:nth-child(even) {
+      display: -webkit-flex;
+      display: flex;
+      background-color: #e0f0f0;
+      flex-direction: row;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .route-nlri {
+      display: -webkit-inline-flex;
+      display: inline-flex;
+      padding-right: 2px;
+      flex-grow: 0;
+      flex-shrink: 0;
+      width: 10%;
+      word-break: break-word;
+    }
+
+    .session-container {
+      display: -webkit-inline-flex;
+      display: inline-flex;
+      flex-direction: column;
+      flex-grow: 0;
+      flex-shrink: 1;
+    }
+
+    .session-head {
+      display: -webkit-inline-flex;
+      display: flex;
+      width: 100%;
+      padding-left: 8px;
+      text-decoration: underline;
+      border-left: 1px solid #f0f0f0;
+    }
+
+    .session-body {
+      display: -webkit-flex;
+      display: flex;
+      flex-direction: row;
+    }
+
+    .path-container {
+      display: -webkit-inline-flex;
+      display: inline-flex;
+      flex-direction: column;
+      flex-grow: 0;
+      flex-shrink: 1;
+    }
+
+    .path-head {
+      display: -webkit-flex;
+      display: flex;
+      width: 100%;
+      border-left: 1px solid #f0f0f0;
+      padding-left: 8px;
+      text-decoration: underline;
+    }
+
+    .path-body {
+      display: -webkit-flex;
+      display: flex;
+      flex-direction: row;
+      white-space: pre-wrap;
+      border-left: 1px solid #f0f0f0;
+    }
+
+    .attr-container {
+      display: -webkit-flex;
+      display: flex;
+      flex-direction: column;
+      flex-grow: 1;
+      flex-shrink: 1;
+    }
+
+    .attr-item {
+      white-space: pre-wrap;
+      display: block;
+    }
+
+    .attr-item:nth-child(even) {
+      white-space: pre-wrap;
+      display: block;
+      background-color: #f0e0f0;
+    }
+
+    .attr-text {}
+
+    .inactive {
+      font-style: italic;
+      color: #707070;
+    }
+
+    .imgbutton {
+      margin: 0px;
+      padding: 0px;
     }
 
     .popup {
@@ -511,12 +729,13 @@
 </head>
 
 <body OnLoad="CheckStat()">
-  <div id='ribs'>No RIBs yet...</div>
+  <div id='ribs' class='attr-text'>No RIBs yet...</div>
   <div><input type=text id='filtertext' style='width:90%'
       placeholder='[-]10.0.0.0/8 community:100:1000 as:^100 as:100$ nh:1.1.1.1 rt:100:1000 rd:100:1'
-      onkeydown="return oninputkey(event)"><input id="querybtn" type="button" value="&gt;&gt;" OnClick="OnQueryBtn()"></div>
+      onkeydown="return oninputkey(event)"><input id="querybtn" type="button" value="&gt;&gt;" OnClick="OnQueryBtn()">
+  </div>
   <img id='inprogress' src='wait.svg' border='0' style='display:none;position:fixed;width:32px;height:32px'>
-  <div id='noroutes'>
+  <div id='noroutes' class='attr-text'>
     <ul>
       <li>Filter terms:
         <ul>
@@ -540,7 +759,7 @@
     </ul>
   </div>
   <div id='wnd' style='display:none' class='popup' OnMouseOut='OnHidePopup(event)'></div>
-  <div id='result'></div>
+  <div id='result' style='width:100%'></div>
 </body>
 
 </html>

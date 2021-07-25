@@ -1,16 +1,14 @@
 use crate::*;
 use std::collections::BTreeMap;
-use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::*;
 use zettabgp::bmp::prelude::*;
 use zettabgp::prelude::*;
 
 pub struct BmpPeer<'a, H: BgpUpdateHandler> {
     peersock: tokio::net::TcpStream,
     peer: Arc<ProtoPeer>,
-    sessids: BTreeMap<IpAddr, BgpSessionId>,
+    sessids: BTreeMap<BmpMessagePeerHeader, BgpSessionId>,
     update_handler: &'a H,
 }
 
@@ -33,20 +31,30 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                 if let Some(ref filter_rd) = self.peer.flt_rd {
                     if pu.peer.peerdistinguisher != *filter_rd {
                         //skip non-interesting update
-                        eprintln!("Skip: {:?}", pu);
+                        //eprintln!("Skip: {:?}", pu);
                         return Ok(());
                     }
                 };
-                self.sessids.insert(
-                    pu.peer.peeraddress,
-                    self.update_handler
-                        .register_session(pu.localaddress, pu.peer.peeraddress)
-                        .await,
+                let sessid = self
+                    .update_handler
+                    .register_session(Arc::new(BgpSessionDesc::from_bmppeerup(&pu)))
+                    .await;
+                eprintln!(
+                    "Register session id {} for peer {:?}",
+                    sessid, pu
                 );
+                self.sessids.insert(pu.peer, sessid);
             }
             BmpMessage::RouteMonitoring(rm) => {
-                let sessid = match self.sessids.get(&rm.peer.peeraddress) {
-                    None => return Ok(()),
+                let sessid = match self.sessids.get(&rm.peer) {
+                    None => {
+                        if let Some(ref filter_rd) = self.peer.flt_rd {
+                            if rm.peer.peerdistinguisher == *filter_rd {
+                                eprintln!("Skip update: {:?}",rm);
+                            };
+                        };
+                        return Ok(())
+                    },
                     Some(x) => *x,
                 };
                 self.update_handler.handle_update(sessid, rm.update).await;

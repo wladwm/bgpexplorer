@@ -1,5 +1,7 @@
 use crate::bgpsvc::*;
 use chrono::prelude::*;
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::*;
 use zettabgp::prelude::*;
@@ -18,13 +20,13 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
         stream: tokio::net::TcpStream,
         handler: &'a H,
     ) -> BgpPeer<'a, H> {
-        let peerip=stream.peer_addr().unwrap().ip();
+        let peerip = stream.peer_addr().unwrap().ip();
         let mut ret = BgpPeer::<H> {
             params: pars,
             peersock: stream,
             keepalive_sent: Local::now(),
             update_handler: handler,
-            sessionid: 0
+            sessionid: 0,
         };
         ret.params.peer_mode = if peerip.is_ipv4() {
             BgpTransportMode::IPv4
@@ -79,22 +81,26 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
         }
         self.read_socket(&mut buf[0..msg.1]).await?;
         bom.decode_from(&self.params, &buf[0..msg.1])?;
-        //println!("Got BGP Open: {:?}", bom);
+        let remsess = BgpPeerDesc::new(self.peersock.peer_addr().unwrap().ip(), bom.clone());
         bom.router_id = self.params.router_id;
+        self.params.as_num = bom.as_num;
+        self.params.hold_time = bom.hold_time;
+        self.params.match_caps(&bom.caps);
         let sz = match bom.encode_to(&self.params, BgpPeer::<H>::get_message_body_ref(&mut buf)?) {
             Err(e) => return Err(e),
             Ok(sz) => sz,
         };
         self.send_message_buf(&mut buf, BgpMessageType::Open, sz)
             .await?;
-        self.params.as_num = bom.as_num;
-        self.params.hold_time = bom.hold_time;
-        self.params.caps = bom.caps;
-        self.params.check_caps();
+        let mysess = BgpPeerDesc::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), bom.clone());
+        self.sessionid = self
+            .update_handler
+            .register_session(Arc::new(BgpSessionDesc::new(mysess, remsess)))
+            .await;
         Ok(())
     }
     pub async fn start_active(&mut self) -> Result<(), BgpError> {
-        let mut bom = self.params.open_message();
+        let bom = self.params.open_message();
         let mut buf = [255 as u8; 255];
         let sz = match bom.encode_to(&self.params, BgpPeer::<H>::get_message_body_ref(&mut buf)?) {
             Err(e) => {
@@ -102,6 +108,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
             }
             Ok(sz) => sz,
         };
+        let mysess = BgpPeerDesc::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), bom.clone());
         self.send_message_buf(&mut buf, BgpMessageType::Open, sz)
             .await?;
         let msg = match self.recv_message_head().await {
@@ -114,10 +121,15 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
             return Err(BgpError::static_str("Invalid state to start_active"));
         }
         self.read_socket(&mut buf[0..msg.1]).await?;
-        bom.decode_from(&self.params, &buf[0..msg.1])?;
-        self.params.hold_time = bom.hold_time;
-        self.params.caps = bom.caps;
-        self.params.check_caps();
+        let mut bomrcv = self.params.open_message();
+        bomrcv.decode_from(&self.params, &buf[0..msg.1])?;
+        let remsess = BgpPeerDesc::new(self.peersock.peer_addr().unwrap().ip(), bomrcv.clone());
+        self.params.hold_time = bomrcv.hold_time;
+        self.params.match_caps(&bomrcv.caps);
+        self.sessionid = self
+            .update_handler
+            .register_session(Arc::new(BgpSessionDesc::new(mysess, remsess)))
+            .await;
         Ok(())
     }
     pub async fn send_keepalive(&mut self) -> Result<(), BgpError> {
@@ -206,10 +218,9 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                         eprintln!("BGP update decode error: {:?}", e);
                         continue;
                     }
-                    if self.sessionid == 0 {
-                        self.sessionid=self.update_handler.register_session(self.peersock.peer_addr().unwrap().ip(),std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)).await;
-                    }
-                    self.update_handler.handle_update(self.sessionid,msgupdate).await;
+                    self.update_handler
+                        .handle_update(self.sessionid, msgupdate)
+                        .await;
                 }
             }
         }

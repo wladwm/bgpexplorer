@@ -30,7 +30,6 @@ use config::*;
 mod ribfilter;
 mod ribservice;
 mod tojson;
-use config::*;
 
 use std::sync::Arc;
 

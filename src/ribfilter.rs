@@ -1,10 +1,11 @@
-use crate::bgprib::{BgpAttrHistory, BgpAttrs, BgpRIBKey, BgpRIBSafi};
+use crate::bgprib::{ClonableIterator, BgpSessionEntry, BgpAttrs, BgpRIBKey, BgpRIBSafi};
+use crate::clone_iter;
 use zettabgp::prelude::*;
-use crate::config::*;
 use std::ops::RangeInclusive;
 use std::collections::BTreeSet;
-
 use regex::Regex;
+use std::rc::Rc;
+
 pub struct SortIter<T> {
     sorted: Vec<T>,
 }
@@ -501,11 +502,24 @@ pub struct FilterTerm {
 pub struct RouteFilter {
     pub terms: std::vec::Vec<FilterTerm>,
 }
+#[derive(Clone)]
+pub struct RouteFilterParams<'a> {
+    pub filter: &'a RouteFilter,
+    pub maxdepth: usize,
+    pub onlyactive: bool,
+}
+impl<'a> RouteFilterParams<'a> {
+    pub fn new(flt:&'a RouteFilter, max_depth: usize, only_active: bool) -> RouteFilterParams {
+        RouteFilterParams {
+            filter: flt,
+            maxdepth: max_depth,
+            onlyactive: only_active,
+        }
+    }
+}
 pub struct RouteFilterSubnets<'a, 'b, T: FilterMatchRoute + BgpRIBKey> {
-    filter: &'a RouteFilter,
-    maxdepth: usize,
-    onlyactive: bool,
-    srcitr: Box<dyn std::iter::Iterator<Item=(&'b T, &'b BgpAttrHistory)> + 'b >
+    filter: RouteFilterParams<'a>,
+    srcitr: ClonableIterator<'b,&'b T,&'b BgpSessionEntry>
 }
 impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSubnets<'a, 'b, T> {
     pub fn new(
@@ -515,45 +529,38 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSubnets<'a, 'b, T> {
         srcafi: &'b BgpRIBSafi<T>,
     ) -> RouteFilterSubnets<'a, 'b, T> {
         Self {
-            filter: filter,
-            maxdepth: maxdepth,
-            onlyactive: onlyactive,
+            filter: RouteFilterParams::new(filter,maxdepth,onlyactive),
             srcitr: 
             match filter.find_least_subnet() {
                 None => srcafi.get_iter(filter),
                 Some(fnet) => {
                     match fnet.get_subnet_range::<T>() {
-                        None => Box::new(srcafi.items.iter()),
-                        Some(rng) => Box::new(srcafi.items.range(rng))
+                        None => clone_iter!(srcafi.items.iter()),
+                        Some(rng) => clone_iter!(srcafi.items.range(rng))
                     }
-                    
                 }
             },
         }
     }
 }
 impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator for RouteFilterSubnets<'a, 'b, T> {
-    type Item = (&'b T, &'b BgpAttrHistory);
+    type Item = (&'b T, &'b BgpSessionEntry);
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.srcitr.next() {
                 None => break,
                 Some(q) => {
-                    for histitem in
-                        q.1.items
-                            .iter()
-                            .filter(|hr| if self.onlyactive { hr.1.active } else { true })
-                            .skip(if q.1.items.len() > self.maxdepth {
-                                q.1.items.len() - self.maxdepth
-                            } else {
-                                0
-                            })
+                    if q.1.items.iter().find(|ssitr|{
+                        ssitr.1.items.iter().find(|pitr|{
+                           pitr.1.items.iter()
+                           .filter(|hr| if self.filter.onlyactive { hr.1.active } else { true })
+                           .skip(if pitr.1.items.len() > self.filter.maxdepth { pitr.1.items.len() - self.filter.maxdepth } else {  0  }).find(|histitem|{
+                            self.filter.filter.match_route(q.0, &histitem.1.attrs)  == FilterItemMatchResult::Yes
+                           }).is_some()
+                        }).is_some()
+                    }).is_some()
                     {
-                        if self.filter.match_route(q.0, &histitem.1.attrs)
-                            == FilterItemMatchResult::Yes
-                        {
-                            return Some(q);
-                        }
+                        return Some(q);
                     }
                 }
             }
@@ -562,10 +569,8 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator for RouteFilte
     }
 }
 pub struct RouteFilterSupernets<'a, 'b, T: FilterMatchRoute + BgpRIBKey> {
-    filter: &'a RouteFilter,
-    maxdepth: usize,
-    onlyactive: bool,
-    srcitr: Box<dyn std::iter::Iterator<Item=(&'b T, &'b BgpAttrHistory)> + 'b >
+    filter: RouteFilterParams<'a>,
+    srcitr: ClonableIterator<'b,&'b T,&'b BgpSessionEntry>
 }
 impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSupernets<'a, 'b, T> {
     pub fn new(
@@ -575,46 +580,37 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSupernets<'a, 'b, T> {
         srcafi: &'b BgpRIBSafi<T>,
     ) -> RouteFilterSupernets<'a, 'b, T> {
         RouteFilterSupernets {
-            filter: filter,
-            maxdepth: maxdepth,
-            onlyactive: onlyactive,
+            filter: RouteFilterParams::new(filter,maxdepth,onlyactive),
             srcitr: //srcafi.items.iter(),
             match filter.find_least_subnet() {
-                None => srcafi.get_iter(filter),//Box::new(srcafi.items.iter()),
+                None => srcafi.get_iter(filter),
                 Some(fnet) => {
                     match fnet.get_supernet_range::<T>() {
-                        None => Box::new(srcafi.items.iter()),
-                        Some(rng) => {
-                            Box::new(srcafi.items.range(rng))}
+                        None => clone_iter!(srcafi.items.iter()),
+                        Some(rng) => clone_iter!(srcafi.items.range(rng)),
                     }
-                    
                 }
             },
         }
     }
 }
 impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator for RouteFilterSupernets<'a, 'b, T> {
-    type Item = (&'b T, &'b BgpAttrHistory);
+    type Item = (&'b T, &'b BgpSessionEntry);
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.srcitr.next() {
                 None => break,
                 Some(q) => {
-                    for histitem in
-                        q.1.items
-                            .iter()
-                            .filter(|hr| if self.onlyactive { hr.1.active } else { true })
-                            .skip(if q.1.items.len() > self.maxdepth {
-                                q.1.items.len() - self.maxdepth
-                            } else {
-                                0
-                            })
-                    {
-                        if self.filter.match_super_route(q.0, &histitem.1.attrs)
-                            == FilterItemMatchResult::Yes
-                        {
-                            return Some(q);
-                        }
+                    if q.1.items.iter().find(|ssitr|{
+                        ssitr.1.items.iter().find(|pitr|{
+                           pitr.1.items.iter()
+                           .filter(|hr| if self.filter.onlyactive { hr.1.active } else { true })
+                           .skip(if pitr.1.items.len() > self.filter.maxdepth { pitr.1.items.len() - self.filter.maxdepth } else {  0  }).find(|histitem|{
+                            self.filter.filter.match_super_route(q.0, &histitem.1.attrs)  == FilterItemMatchResult::Yes
+                           }).is_some()
+                        }).is_some()
+                    }).is_some() {
+                        return Some(q);
                     }
                 }
             }
@@ -622,6 +618,7 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator for RouteFilte
         None
     }
 }
+
 impl RouteFilter {
     pub fn new() -> RouteFilter {
         RouteFilter { terms: Vec::new() }
@@ -660,14 +657,14 @@ impl RouteFilter {
         safi: &'a BgpRIBSafi<T>,
         takemaxdepth: usize,
         takeonlyactive: bool,
-    ) -> Option<(&'a T, &'a BgpAttrHistory)> {
-        let mut ret: Option<(&'a T, &'a BgpAttrHistory)> = None;
+    ) -> Option<(&'a T, &'a BgpSessionEntry)> {
+        let mut ret: Option<(&'a T, &'a BgpSessionEntry)> = None;
         for q in RouteFilterSupernets::new(&self, takemaxdepth, takeonlyactive, safi) {
             match ret {
                 None => {
                     ret = Some(q);
                 }
-                Some(x) => {
+                Some(ref x) => {
                     if x.0.len() < q.0.len() {
                         ret = Some(q);
                     }
@@ -680,13 +677,20 @@ impl RouteFilter {
         if self.terms.len() < 1 {
             return FilterItemMatchResult::Yes;
         }
+        let mut cnt:usize = 0;
         for i in self.terms.iter() {
-            match i.match_attr(attr) {
-                FilterItemMatchResult::Unknown => {}
-                n => {
-                    return n;
-                }
+            if i.item.kind() == FilterItemKind::Attr {
+                match i.match_attr(attr) {
+                    FilterItemMatchResult::Unknown => {},
+                    n => {
+                        return n;
+                    }
+                };
+                cnt += 1;
             }
+        }
+        if cnt < 1 {
+            return FilterItemMatchResult::Yes;
         }
         FilterItemMatchResult::Unknown
     }
@@ -1468,6 +1472,7 @@ impl FilterTerm {
 mod tests {
     use super::*;
     use std::rc::Rc;
+    use crate::config::*;
 
     #[test]
     fn test_ribfilter_fi_ipv4_host() {
