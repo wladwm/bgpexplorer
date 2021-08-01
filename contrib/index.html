@@ -59,9 +59,7 @@
             }, 1000);
             return;
           }
-          if (event.target.status == 200) {
-            this.on_done(event);
-          }
+          this.on_done(event);
         }
       }
       onXhrStateError(event) {
@@ -94,7 +92,6 @@
     var active_rib = "";
     var pagesize = 100;
     var skip = 0;
-
     var queryRib = new ApiQuery();
     var queryStatistics = new ApiQuery();
     var querySessions = new ApiQuery();
@@ -275,7 +272,7 @@
       let rcnt = 0;
       let bgpsessids = Object.keys(bgp_sessions);
       Object.keys(result.items).forEach((route) => {
-        rtxt += "<div class='route-container'><div class='route-nlri'>" + escapeHTML(route) + "</div>";
+        rtxt += "<div class='route-nlri'>" + escapeHTML(route) + "</div><div class='sessions-container'>";
         let sessions = result.items[route];
         let sessids = Object.keys(sessions);
         sessids.forEach((sessionid) => {
@@ -302,7 +299,8 @@
       queryRib.Query((event) => {
         try {
           hidePopup();
-          showRoutes(event.target.responseText);
+          if (event.target.status==200)
+            showRoutes(event.target.responseText);
         } catch (err) {
           //queryRib.executeQuery();
           alert(err);
@@ -373,6 +371,10 @@
     }
     function CheckStat() {
       queryStatistics.Query((event) => {
+        if (event.target.status!=200){
+          queryStatistics.executeQuery();
+          return;
+        }
         try {
           server_statistics = JSON.parse(event.target.responseText);
           if (bgp_sessions) OnRefreshStats();
@@ -382,6 +384,10 @@
         }
       }, "api/statistics");
       querySessions.Query((event) => {
+        if (event.target.status!=200){
+          querySessions.executeQuery();
+          return;
+        }
         try {
           bgp_sessions = JSON.parse(event.target.responseText);
           if (server_statistics) OnRefreshStats();
@@ -429,7 +435,7 @@
       let btnimg = getBtnImg(btn);
       let imgpng = getImgPng(btnimg);
       let act_show = imgpng != "rtl";
-      let routeCont = findParentClass(btn, 'route-container');
+      let routeCont = findParentClass(btn, 'sessions-container');
       let sessConts = routeCont.querySelectorAll("div.session-container");
       showItemsSec(sessConts, act_show);
       btnimg.src = act_show ? "rtl.png" : "ltr.png";
@@ -449,9 +455,7 @@
       let btnimg = getBtnImg(btn);
       let imgpng = getImgPng(btnimg);
       let act_show = imgpng != "dtu";
-      console.log(btn);
       let histDiv = findParentClass(btn, 'attr-container').querySelectorAll("div.attr-container")[0];
-      console.log(histDiv);
       showFlexElem(histDiv, act_show);
       btnimg.src = act_show ? "dtu.png" : "utd.png";
     }
@@ -491,7 +495,14 @@
         this.render();
       }
     };
+    customElements.define("bgp-as", BgpAs);
+    customElements.define("ip-addr", IpAddr);
+  </script>
+  <script type="text/javascript">
+    var indexedDB = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB;
+    var IDBTransaction = window.IDBTransaction || window.webkitIDBTransaction || window.msIDBTransaction;
     var popup_target = undefined;
+    var popup_rect = { x: 0, y: 0, width: 0, height: 0 };
     function showPopupText(txt) {
       if (!txt) {
         popup_target = undefined;
@@ -512,15 +523,69 @@
       ppup.style.left = x + "px";
       ppup.innerHTML = "<pre>" + escapeHTML(txt) + "</pre>";
       ppup.style.display = 'block';
+      rct = ppup.getBoundingClientRect();
+      popup_rect.x = x;
+      popup_rect.y = y;
+      popup_rect.width = rct.width;
+      popup_rect.height = rct.height;
       popup_target = undefined;
     };
     var queryWhois = new ApiQuery();
-    function ExecutePopupQuery(uritxt) {
+    var idxDb = undefined;
+    function openIndexedDB() {
+      if (idxDb) return;
+      if (idxDb == 0) return;
+      var request = indexedDB.open("bgpexplorerBase", 1);
+      request.onerror = function (err) {
+        idxDb = 0;
+        console.log(err);
+      };
+      request.onsuccess = function () {
+        idxDb = request.result;
+      }
+      request.onupgradeneeded = function (e) {
+        idxDb = e.currentTarget.result;
+        idxDb.createObjectStore("AS", { keyPath: "id" });
+        idxDb.createObjectStore("RDNS", { keyPath: "id" });
+        openIndexedDB();
+      }
+    }
+    function ExecuteWhoisQuery(kind, baseuri, reqval) {
       queryWhois.Query((event) => {
-        showPopupText(event.target.responseText);
-      }, uritxt);
+        let restxt = event.target.responseText;
+        if (idxDb) {
+          let dbreq = idxDb.transaction([kind], "readwrite").objectStore(kind).put({ 'id': reqval, 'when': new Date(), 'valid': event.target.status==200, 'text': restxt });
+          dbreq.onerror = () => { console.log("Put error") };
+          dbreq.onsuccess = function () {
+            return dbreq.result;
+          }
+        }
+        if(event.target.status==200) showPopupText(restxt);
+      }, baseuri + encodeURI("" + reqval));
+    }
+    function ExecutePopupQuery(kind, baseuri, reqval) {
+      openIndexedDB();
+      if (idxDb) {
+        let dbreq = idxDb.transaction([kind], "readonly").objectStore(kind).get(reqval);
+        dbreq.onerror = () => {
+          ExecuteWhoisQuery(kind, baseuri, reqval);
+        };
+        dbreq.onsuccess = function () {
+          if (!dbreq.result) {
+            ExecuteWhoisQuery(kind, baseuri, reqval);
+          } else {
+            if (dbreq.result.valid)
+              showPopupText(dbreq.result.text);
+            if (((new Date()) - dbreq.result.when) > 300000) {
+              ExecuteWhoisQuery(kind, baseuri, reqval);
+            }
+          }
+        };
+      } else ExecuteWhoisQuery(kind, baseuri, reqval);
     };
     function OnHidePopup(event) {
+      if ((event.pageX >= popup_rect.x) && (event.pageX < (popup_rect.x + popup_rect.width)) && (event.pageY >= popup_rect.y) && (event.pageY < (popup_rect.y + popup_rect.height)))
+        return;
       let ppup = document.getElementById('wnd');
       if (!ppup) return;
       ppup.style.display = 'none';
@@ -530,7 +595,7 @@
       if (event.target.parentNode.tagName != 'BGP-AS') return;
       let asn = parseInt(event.target.parentNode.getAttribute('val'));
       queryWhois.debounce(() => {
-        ExecutePopupQuery('api/whois/as?query=AS' + encodeURI("" + asn));
+        ExecutePopupQuery('AS', 'api/whois/as?query=AS', asn);
       }, 100);
     };
     function OnOverIpAddr(event) {
@@ -538,44 +603,12 @@
       if (event.target.parentNode.tagName != 'IP-ADDR') return;
       let ipaddr = event.target.parentNode.getAttribute('val');
       queryWhois.debounce(() => {
-        ExecutePopupQuery('api/dns/' + encodeURI("" + ipaddr));
+        ExecutePopupQuery('RDNS', 'api/dns/', ipaddr);
       }, 100);
     };
-    customElements.define("bgp-as", BgpAs);
-    customElements.define("ip-addr", IpAddr);
   </script>
   <style>
-    body {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: 8pt;
-    }
-
-    p {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: 8pt;
-    }
-
-    div {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: 8pt;
-    }
-
-    ul {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: 8pt;
-    }
-
-    li {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: 8pt;
-    }
-
-    input {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: 8pt;
-    }
-
-    button {
+    * {
       font-family: 'Courier New', Courier, monospace;
       font-size: 8pt;
     }
@@ -591,40 +624,38 @@
     }
 
     .result-container {
-      display: -webkit-flex;
-      display: flex;
-      flex-direction: column;
+      display: grid;
+      grid-template-columns: min-content auto;
       width: 100%;
     }
 
-    .route-container {
-      display: -webkit-flex;
-      display: flex;
-      flex-direction: row;
-      border-bottom: 1px solid #f0f0f0;
-    }
-
-    .route-container:nth-child(even) {
-      display: -webkit-flex;
-      display: flex;
-      background-color: #e0f0f0;
-      flex-direction: row;
-      border-bottom: 1px solid #f0f0f0;
-    }
-
     .route-nlri {
-      display: -webkit-inline-flex;
-      display: inline-flex;
       padding-right: 2px;
+    }
+
+    .route-nlri:nth-child(4n-1) {
+      padding-right: 2px;
+      background-color: #e0f0f0;
+    }
+
+    .sessions-container {
+      display: -webkit-inline-flex;
+      display: flex;
+      flex-direction: row;
+    }
+
+    .sessions-container:nth-child(4n) {
+      display: -webkit-inline-flex;
+      display: flex;
+      flex-direction: column;
       flex-grow: 0;
-      flex-shrink: 0;
-      width: 10%;
-      word-break: break-word;
+      flex-shrink: 1;
+      background-color: #e0f0f0;
     }
 
     .session-container {
       display: -webkit-inline-flex;
-      display: inline-flex;
+      display: flex;
       flex-direction: column;
       flex-grow: 0;
       flex-shrink: 1;
