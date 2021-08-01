@@ -182,26 +182,14 @@ impl BgpSvr {
             BgpCapability::SafiVPLS,
             BgpCapability::SafiEVPN,
             BgpCapability::CapASN32(asn),
-            BgpCapability::CapAddPath(
+            BgpCapability::CapAddPath(vec![
                 BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv4u, true, true).unwrap(),
-            ),
-            /*
-            BgpCapability::CapAddPath(
                 BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv4lu, true, true).unwrap(),
-            ),
-            BgpCapability::CapAddPath(
                 BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv6u, true, true).unwrap(),
-            ),
-            BgpCapability::CapAddPath(
                 BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv6lu, true, true).unwrap(),
-            ),
-            BgpCapability::CapAddPath(
                 BgpCapAddPath::new_from_cap(BgpCapability::SafiVPNv4u, true, true).unwrap(),
-            ),
-            BgpCapability::CapAddPath(
                 BgpCapAddPath::new_from_cap(BgpCapability::SafiVPNv6u, true, true).unwrap(),
-            ),
-            */
+            ]),
         ]
     }
     pub async fn start_updates(&mut self) {
