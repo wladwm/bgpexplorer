@@ -4,6 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
 use whois_rust::WhoIs;
+use zettabgp::prelude::*;
 
 /// peer protocol mode
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,15 +28,22 @@ pub enum HistoryChangeMode {
 }
 
 /// peer
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ProtoPeer {
     pub routerid: Ipv4Addr,
     pub mode: PeerMode,
     pub peer: Option<SocketAddr>,
     pub protolisten: Option<SocketAddr>,
     pub bgppeeras: u32,
-    pub flt_rd: Option<zettabgp::afi::BgpRD>
+    pub flt_rd: Option<zettabgp::afi::BgpRD>,
+    pub bgpsessionparams: Arc<std::sync::Mutex<Option<BgpSessionParams>>>,
 }
+impl PartialEq for ProtoPeer {
+    fn eq(&self, other: &Self) -> bool {
+        self.routerid == other.routerid && self.mode == other.mode && self.peer == other.peer
+    }
+}
+impl Eq for ProtoPeer {}
 impl ProtoPeer {
     pub fn from_ini(
         svcsection: &std::collections::HashMap<
@@ -167,9 +175,7 @@ impl ProtoPeer {
         };
         let flt_rd = if svcsection.contains_key("filter_rd") {
             match svcsection["filter_rd"] {
-                None => {
-                    None
-                }
+                None => None,
                 Some(ref s) => match s.parse() {
                     Err(e) => {
                         return Err(ErrorConfig::from_string(format!(
@@ -181,7 +187,7 @@ impl ProtoPeer {
                 },
             }
         } else {
-            Some(zettabgp::afi::BgpRD::new(0,0))
+            Some(zettabgp::afi::BgpRD::new(0, 0))
         };
         Ok(ProtoPeer {
             routerid: routerid,
@@ -189,8 +195,63 @@ impl ProtoPeer {
             peer: peer,
             protolisten: protolisten,
             bgppeeras: bgppeeras,
-            flt_rd: flt_rd
+            flt_rd: flt_rd,
+            bgpsessionparams: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+    pub fn set_session_params(&self, params: BgpSessionParams) {
+        *(self.bgpsessionparams.lock().unwrap()) = Some(params);
+    }
+    pub fn def_caps(asn: u32) -> Vec<BgpCapability> {
+        vec![
+            BgpCapability::SafiIPv4u,
+            BgpCapability::SafiIPv4fu,
+            BgpCapability::SafiVPNv4fu,
+            BgpCapability::SafiIPv4m,
+            BgpCapability::SafiIPv4lu,
+            BgpCapability::SafiIPv6lu,
+            BgpCapability::SafiIPv6fu,
+            BgpCapability::SafiVPNv4u,
+            BgpCapability::SafiVPNv4m,
+            BgpCapability::SafiVPNv6u,
+            BgpCapability::SafiVPNv6m,
+            BgpCapability::SafiIPv4mvpn,
+            BgpCapability::SafiVPLS,
+            BgpCapability::SafiEVPN,
+            BgpCapability::SafiIPv4mdt,
+            BgpCapability::SafiIPv6mdt,
+            BgpCapability::CapASN32(asn),
+            BgpCapability::CapAddPath(vec![
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv4u, true, true).unwrap(),
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv4lu, true, true).unwrap(),
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv6u, true, true).unwrap(),
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv6lu, true, true).unwrap(),
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiVPNv4u, true, true).unwrap(),
+                BgpCapAddPath::new_from_cap(BgpCapability::SafiVPNv6u, true, true).unwrap(),
+            ]),
+        ]
+    }
+    pub fn get_session_params(&self) -> BgpSessionParams {
+        let mut lck = self.bgpsessionparams.lock().unwrap();
+        if let Some(p) = lck.as_ref() {
+            return p.clone();
+        };
+        let peeraddrmode = match self.peer {
+            None => BgpTransportMode::IPv4,
+            Some(l) => match l {
+                SocketAddr::V4(_) => BgpTransportMode::IPv4,
+                SocketAddr::V6(_) => BgpTransportMode::IPv6,
+            },
+        };
+        let pbsp = BgpSessionParams::new(
+            self.bgppeeras,
+            180,
+            peeraddrmode,
+            self.routerid,
+            Self::def_caps(self.bgppeeras),
+        );
+        *lck = Some(pbsp.clone());
+        pbsp
     }
 }
 
@@ -209,6 +270,8 @@ pub struct SvcConfig {
     pub peers: Vec<Arc<ProtoPeer>>,
     pub purge_after_withdraws: u64,
     pub purge_every: chrono::Duration,
+    pub snapshot_file: Option<String>,
+    pub snapshot_every: Option<chrono::Duration>,
 }
 
 #[derive(Debug)]
@@ -325,6 +388,21 @@ impl SvcConfig {
             }
         } else {
             "./contrib".to_string()
+        };
+        let snapshot_file = if mainsection.contains_key("snapshot") {
+            mainsection["snapshot"].as_ref().map(|s| s.to_string())
+        } else {
+            None
+        };
+        let snapshot_every = if mainsection.contains_key("snapshot_every") {
+            Some(chrono::Duration::seconds(
+                mainsection["snapshot_every"]
+                    .as_ref()
+                    .map(|s| s.parse().unwrap_or(43200))
+                    .unwrap_or(43200),
+            ))
+        } else {
+            None
         };
         let historydepth: usize = if mainsection.contains_key("historydepth") {
             match mainsection["historydepth"] {
@@ -446,7 +524,7 @@ impl SvcConfig {
                             Err(_) => match (sdns.trim().to_string() + ":53").parse() {
                                 Ok(sck) => dnses.push(sck),
                                 Err(_) => {
-                                    eprintln!("Invalid DNS: {}", sdns);
+                                    warn!("Invalid DNS: {}", sdns);
                                 }
                             },
                         }
@@ -474,6 +552,8 @@ impl SvcConfig {
             purge_after_withdraws: purge_after_withdraws,
             purge_every: purge_every,
             peers: peers,
+            snapshot_file,
+            snapshot_every,
         })
     }
 }

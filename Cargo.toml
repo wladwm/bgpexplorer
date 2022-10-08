@@ -1,6 +1,6 @@
 [package]
 name = "bgpexplorer"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Vladimir Melnikov <wlad.w.m@gmail.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
@@ -13,17 +13,17 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-zettabgp = { version = "0.2.1", features = ["serde"] }
-tokio = { version = "1.5.0", features = ["full"] }
-tokio-util = "0.6.6"
+zettabgp = { version = "0.3.0", features = ["serde"] }
+tokio = { version = "1.21.0", features = ["full"] }
+tokio-util = { version = "0.7.4", features = ["full"] }
 hyper = { version = "0.14.5", features = ["full"] }
-futures = "0.3.14"
-futures-util = "0.3.14"
-chrono = "0.4.19"
+futures = "0.3.24"
+futures-util = "0.3.24"
+chrono = "0.4.22"
 ini = { version = "1.3.0"}
-async-trait = "0.1.49"
-html-escape = "0.2.9"
-serde = "1.0.125"
+async-trait = "0.1.57"
+html-escape = "0.2.11"
+serde = { version = "1.0.125", features = ["derive"] }
 serde_json = "1.0.64"
 lazy_static = "1.4.0"
 regex = "1.4.6"
@@ -31,5 +31,10 @@ url = "2.2.1"
 sled = "0.34.6"
 dnssector = { version="0.2.4" }
 whois-rust =  { version = "1.3.1", features= ["tokio"]  }
+ciborium = { version = "0.2.0" }
+ciborium-io = "0.2.0"
+log = "0"
+pretty_env_logger = "0"
+
 
 

@@ -48,13 +48,19 @@ pub struct BgpRIBts {
     pub rib: Arc<RwLock<BgpRIB>>,
 }
 impl BgpRIBts {
-    pub fn new(cfg: &SvcConfig) -> BgpRIBts {
+    pub fn new(cfg: &SvcConfig, rib: BgpRIB) -> BgpRIBts {
         BgpRIBts {
             locktimeout: Duration::from_secs(cfg.httptimeout),
-            rib: Arc::new(RwLock::new(BgpRIB::new(cfg))),
+            rib: Arc::new(RwLock::new(rib)),
         }
     }
-    pub fn run(&self, mut rx: Receiver<Option<(BgpSessionId,BgpUpdateMessage)>>) -> std::thread::JoinHandle<()> {
+    pub async fn shutdown(&self) {
+        self.rib.read().await.shutdown().await;
+    }
+    pub fn run(
+        &self,
+        mut rx: Receiver<Option<(BgpSessionId, BgpUpdateMessage)>>,
+    ) -> std::thread::JoinHandle<()> {
         let ribc = self.rib.clone();
         let builderp = std::thread::Builder::new().name("bgp_garbage_collector".into());
         builderp
@@ -74,13 +80,13 @@ impl BgpRIBts {
                     match updmsg {
                         Some(updm) => {
                             let time_started = Local::now();
-                            if let Err(e) = block_on(ribc.write()).handle_update(updm.0,updm.1) {
-                                eprintln!("RIB handle_update: {:?}", e);
+                            if let Err(e) = block_on(ribc.write()).handle_update(updm.0, updm.1) {
+                                warn!("RIB handle_update: {:?}", e);
                             };
                             let time_done = Local::now();
                             let took = time_done - time_started;
                             if took > chrono::Duration::seconds(1) {
-                                eprintln!("{} Warning: BGP update took {}", time_started, took);
+                                warn!("{} Warning: BGP update took {}", time_started, took);
                             }
                         }
                         None => break,
@@ -123,6 +129,8 @@ impl BgpRIBts {
         m.insert("mvpn", rib.mvpn.len() as u64);
         m.insert("evpn", rib.evpn.len() as u64);
         m.insert("fs4u", rib.fs4u.len() as u64);
+        m.insert("ipv4mdt", rib.ipv4mdt.len() as u64);
+        m.insert("ipv6mdt", rib.ipv6mdt.len() as u64);
         rsp.insert("ribs", m);
         let mut m: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
         m.insert("updates", rib.cnt_updates);
@@ -193,6 +201,8 @@ impl BgpRIBts {
             "mvpn" => BgpRIBts::jsontabrib(&rib.mvpn, &filter, params),
             "evpn" => BgpRIBts::jsontabrib(&rib.evpn, &filter, params),
             "fs4u" => BgpRIBts::jsontabrib(&rib.fs4u, &filter, params),
+            "ipv4mdt" => BgpRIBts::jsontabrib(&rib.ipv4mdt, &filter, params),
+            "ipv6mdt" => BgpRIBts::jsontabrib(&rib.ipv6mdt, &filter, params),
             _ => BgpRIBts::jsontabrib(&rib.ipv4u, &filter, params),
         }
     }

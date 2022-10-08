@@ -143,10 +143,10 @@ pub struct BgpSvr {
 impl BgpUpdateHandler for BgpSvr {
     async fn handle_update(&self, sid: BgpSessionId, upd: BgpUpdateMessage) {
         match self.upd {
-            None => eprintln!("Skip update"),
+            None => warn!("Skip update"),
             Some(ref updch) => match updch.send(Some((sid, upd))).await {
                 Ok(_) => {}
-                Err(e) => eprintln!("Queued update error: {:?}", e),
+                Err(e) => warn!("Queued update error: {:?}", e),
             },
         };
     }
@@ -156,41 +156,24 @@ impl BgpUpdateHandler for BgpSvr {
 }
 impl BgpSvr {
     pub fn new(cfg: Arc<SvcConfig>, cancel_token: tokio_util::sync::CancellationToken) -> BgpSvr {
+        let rib = match cfg.snapshot_file {
+            None => BgpRIB::new(&cfg),
+            Some(ref s) => match BgpRIB::load_snapshot(&cfg, s) {
+                Err(e) => {
+                    warn!("Error loading snapshot: {}", e);
+                    BgpRIB::new(&cfg)
+                }
+                Ok(o) => o,
+            },
+        };
         BgpSvr {
             config: cfg.clone(),
             cancellation: cancel_token,
-            rib: BgpRIBts::new(&cfg),
+            rib: BgpRIBts::new(&cfg, rib),
             sessions: Arc::new(RwLock::new(BgpSessionStorage::new())),
             upd: None,
             updater: None,
         }
-    }
-    fn def_caps(asn: u32) -> Vec<BgpCapability> {
-        vec![
-            BgpCapability::SafiIPv4u,
-            BgpCapability::SafiIPv4fu,
-            BgpCapability::SafiVPNv4fu,
-            BgpCapability::SafiIPv4m,
-            BgpCapability::SafiIPv4lu,
-            BgpCapability::SafiIPv6lu,
-            BgpCapability::SafiIPv6fu,
-            BgpCapability::SafiVPNv4u,
-            BgpCapability::SafiVPNv4m,
-            BgpCapability::SafiVPNv6u,
-            BgpCapability::SafiVPNv6m,
-            BgpCapability::SafiIPv4mvpn,
-            BgpCapability::SafiVPLS,
-            BgpCapability::SafiEVPN,
-            BgpCapability::CapASN32(asn),
-            BgpCapability::CapAddPath(vec![
-                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv4u, true, true).unwrap(),
-                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv4lu, true, true).unwrap(),
-                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv6u, true, true).unwrap(),
-                BgpCapAddPath::new_from_cap(BgpCapability::SafiIPv6lu, true, true).unwrap(),
-                BgpCapAddPath::new_from_cap(BgpCapability::SafiVPNv4u, true, true).unwrap(),
-                BgpCapAddPath::new_from_cap(BgpCapability::SafiVPNv6u, true, true).unwrap(),
-            ]),
-        ]
     }
     pub async fn start_updates(&mut self) {
         if let Some(_) = self.updater {
@@ -207,14 +190,14 @@ impl BgpSvr {
             TcpSocket::new_v6()?
         };
         socket.bind(sockaddr)?;
-        println!("Listening on {}", sockaddr);
+        info!("Listening on {}", sockaddr);
         let listener = socket.listen(1)?;
         loop {
             let client = match listener.accept().await {
                 Ok(acc) => acc,
                 Err(e) => return Err(e),
             };
-            println!("Incoming connected from {}", client.1);
+            info!("Incoming connected from {}", client.1);
             let fpeer: Arc<ProtoPeer> = match self.config.peers.iter().find(|p| {
                 if p.mode == PeerMode::BgpPassive || p.mode == PeerMode::BmpPassive {
                     if let Some(sa) = p.protolisten {
@@ -227,7 +210,7 @@ impl BgpSvr {
             }) {
                 Some(x) => x.clone(),
                 None => {
-                    eprintln!(
+                    error!(
                         "Could not found matching peer for {} @{}",
                         client.1, sockaddr
                     );
@@ -251,19 +234,19 @@ impl BgpSvr {
                                 BgpTransportMode::IPv6
                             },
                             fpeer.routerid,
-                            Self::def_caps(fpeer.bgppeeras),
+                            ProtoPeer::def_caps(fpeer.bgppeeras),
                         ),
                         client.0,
                         &*self,
                     );
                     let mut scs: bool = true;
                     if let Err(e) = peer.start_passive().await {
-                        eprintln!("failed to create BGP peer; err = {:?}", e);
+                        error!("failed to create BGP peer; err = {:?}", e);
                         scs = false;
                     }
                     if scs {
                         peer.lifecycle(self.cancellation.clone()).await;
-                        println!("Session done {}", client.1);
+                        info!("Session done {}", client.1);
                     };
                     peer.close().await;
                 }
@@ -282,14 +265,14 @@ impl BgpSvr {
             }
             Some(l) => l,
         };
-        println!("Connecting to {}", peeraddr);
+        info!("Connecting to {}", peeraddr);
         let peertcp = match tokio::net::TcpStream::connect(peeraddr).await {
             Err(e) => {
                 return Err(e);
             }
             Ok(c) => c,
         };
-        println!("Connected to {}", peeraddr);
+        info!("Connected to {}", peeraddr);
         match fpeer.mode {
             PeerMode::BmpActive => {
                 let mut peer = BmpPeer::new(peertcp, fpeer, &*self);
@@ -297,28 +280,16 @@ impl BgpSvr {
                 peer.close().await;
             }
             PeerMode::BgpActive => {
-                let mut peer = BgpPeer::new(
-                    BgpSessionParams::new(
-                        fpeer.bgppeeras,
-                        180,
-                        match peeraddr {
-                            SocketAddr::V4(_) => BgpTransportMode::IPv4,
-                            SocketAddr::V6(_) => BgpTransportMode::IPv6,
-                        },
-                        fpeer.routerid,
-                        Self::def_caps(fpeer.bgppeeras),
-                    ),
-                    peertcp,
-                    &*self,
-                );
+                let mut peer = BgpPeer::new(fpeer.get_session_params(), peertcp, &*self);
                 let mut scs: bool = true;
                 if let Err(e) = peer.start_active().await {
-                    eprintln!("failed to create BGP peer; err = {:?}", e);
+                    fpeer.set_session_params(peer.params.clone());
+                    warn!("failed to create BGP peer; err = {:?}", e);
                     scs = false;
                 }
                 if scs {
                     peer.lifecycle(self.cancellation.clone()).await;
-                    println!("Session done {}", peeraddr);
+                    info!("Session done {}", peeraddr);
                 };
                 peer.close().await;
             }
@@ -376,16 +347,19 @@ impl BgpSvr {
             }
         }
     }
+    pub async fn shutdown(&self) {
+        self.rib.shutdown().await
+    }
     pub async fn close(mut self) {
         if let Some(ref mut upd) = self.upd {
             if let Err(e) = upd.send(None).await {
-                eprintln!("Sending close error: {:?}", e);
+                warn!("Sending close error: {:?}", e);
                 return;
             }
         }
         if let Some(u) = self.updater {
             if let Err(e) = u.join() {
-                eprintln!("Joining update task error: {:?}", e);
+                warn!("Joining update task error: {:?}", e);
             }
         }
         self.upd = None;

@@ -39,7 +39,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                     .update_handler
                     .register_session(Arc::new(BgpSessionDesc::from_bmppeerup(&pu)))
                     .await;
-                eprintln!(
+                info!(
                     "Register session id {} for peer {:?}",
                     sessid, pu
                 );
@@ -50,7 +50,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                     None => {
                         if let Some(ref filter_rd) = self.peer.flt_rd {
                             if rm.peer.peerdistinguisher == *filter_rd {
-                                eprintln!("Skip update: {:?}",rm);
+                                warn!("Skip update: {:?}",rm);
                             };
                         };
                         return Ok(())
@@ -59,7 +59,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                 };
                 self.update_handler.handle_update(sessid, rm.update).await;
             }
-            _ => eprintln!("BMP: {:?}", msg),
+            _ => info!("BMP: {:?}", msg),
         };
         Ok(())
     }
@@ -73,7 +73,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
               r = self.peersock.read_exact(&mut buf[0..1]) => {
                   match r {
                       Err(e) => {
-                          eprintln!("BMP reading error: {:?}",e);
+                          error!("BMP reading error: {:?}",e);
                           break;
                       }
                       Ok(_) => {
@@ -92,7 +92,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
               r = self.peersock.read_exact(&mut buf[1..5]) => {
                   match r {
                       Err(e) => {
-                          eprintln!("BMP reading error: {:?}",e);
+                          error!("BMP reading error: {:?}",e);
                           break;
                       }
                       Ok(_) => {
@@ -102,7 +102,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
             };
             let bmph = match BmpMessageHeader::decode_from(buf.as_ref()) {
                 Err(e) => {
-                    eprintln!("BmpMessageHeader decode error: {}", e);
+                    error!("BmpMessageHeader decode error: {}", e);
                     continue;
                 }
                 Ok(v) => v,
@@ -117,7 +117,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                 r = self.peersock.read_exact(&mut buf[0..(bmph.0.msglength-5)]) => {
                     match r {
                         Err(e) => {
-                            eprintln!("BMP reading error: {:?}",e);
+                            error!("BMP reading error: {:?}",e);
                             break;
                         }
                         Ok(_) => {
@@ -127,13 +127,13 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
             };
             let msg = match BmpMessage::decode_from(&buf[0..(bmph.0.msglength - 5)]) {
                 Err(e) => {
-                    eprintln!("BMP decode error: {:?}", e);
+                    warn!("BMP decode error: {:?}", e);
                     continue;
                 }
                 Ok(m) => m,
             };
             if let Err(e) = self.processmsg(msg).await {
-                eprintln!("BMP process error: {:?}", e);
+                warn!("BMP process error: {:?}", e);
                 break;
             };
         }
@@ -142,7 +142,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
         match self.peersock.shutdown().await {
             Ok(_) => {}
             Err(e) => {
-                println!("Warning: socket shutdown error: {}", e)
+                warn!("socket shutdown error: {}", e)
             }
         }
     }

@@ -1,10 +1,12 @@
-use crate::bgprib::{ClonableIterator, BgpSessionEntry, BgpAttrs, BgpRIBKey, BgpRIBSafi};
+use crate::bgpattrs::BgpAttrs;
+use crate::bgprib::{BgpRIBKey, BgpRIBSafi, BgpSessionEntry, ClonableIterator};
 use crate::clone_iter;
-use zettabgp::prelude::*;
-use std::ops::RangeInclusive;
-use std::collections::BTreeSet;
+use crate::service::*;
 use regex::Regex;
+use std::collections::BTreeSet;
+use std::ops::RangeInclusive;
 use std::rc::Rc;
+use zettabgp::prelude::*;
 
 pub struct SortIter<T> {
     sorted: Vec<T>,
@@ -51,6 +53,38 @@ impl FilterItemMatchResult {
             FilterItemMatchResult::Yes
         } else {
             FilterItemMatchResult::Unknown
+        }
+    }
+    pub fn multi(v: &[FilterItemMatchResult]) -> FilterItemMatchResult {
+        let cy = v.iter().fold(0usize, |acc, x| {
+            if *x == FilterItemMatchResult::Yes {
+                acc + 1
+            } else {
+                acc
+            }
+        });
+        let cn = v.iter().fold(0usize, |acc, x| {
+            if *x == FilterItemMatchResult::No {
+                acc + 1
+            } else {
+                acc
+            }
+        });
+        if cy > cn {
+            return FilterItemMatchResult::Yes;
+        }
+        if cn > cy {
+            return FilterItemMatchResult::No;
+        }
+        FilterItemMatchResult::Unknown
+    }
+}
+impl std::fmt::Display for FilterItemMatchResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            FilterItemMatchResult::Yes => f.write_str("Yes"),
+            FilterItemMatchResult::No => f.write_str("No"),
+            FilterItemMatchResult::Unknown => f.write_str("Unknown"),
         }
     }
 }
@@ -130,6 +164,8 @@ pub enum FilterItem {
     V6(BgpAddrV6),
     NHV4(BgpAddrV4),
     NHV6(BgpAddrV6),
+    MCV4(BgpAddrV4),
+    MCV6(BgpAddrV6),
     RD(BgpRD),
     ASPath(FilterASPath),
     Community(BgpCommunity),
@@ -155,17 +191,13 @@ impl FilterItem {
                     FilterItemKind::Host
                 }
             }
-            FilterItem::NHV4(_) => FilterItemKind::Attr,
-            FilterItem::NHV6(_) => FilterItemKind::Attr,
-            FilterItem::RD(_) => FilterItemKind::Attr,
-            FilterItem::ASPath(_) => FilterItemKind::Attr,
-            FilterItem::Community(_) => FilterItemKind::Attr,
-            FilterItem::ExtCommunity(_) => FilterItemKind::Attr,
             _ => FilterItemKind::Attr,
         }
     }
 }
-pub trait FilterMatchRoute: std::cmp::Eq + std::hash::Hash + std::fmt::Display + std::marker::Sized {
+pub trait FilterMatchRoute:
+    std::cmp::Eq + std::hash::Hash + std::fmt::Display + std::marker::Sized
+{
     fn match_item(&self, _fi: &FilterItem) -> FilterItemMatchResult {
         FilterItemMatchResult::Unknown
     }
@@ -197,14 +229,19 @@ impl FilterMatchRoute for std::net::IpAddr {
     }
     fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match fi {
-            FilterItem::V4(ref n) => Some(std::net::IpAddr::V4(n.range_first())..=std::net::IpAddr::V4(n.range_last())),
-            _ => None
+            FilterItem::V4(ref n) => {
+                Some(std::net::IpAddr::V4(n.range_first())..=std::net::IpAddr::V4(n.range_last()))
+            }
+            _ => None,
         }
     }
     fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match fi {
-            FilterItem::V4(ref n) => Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(0,0,0,0))..=std::net::IpAddr::V4(n.range_last())),
-            _ => None
+            FilterItem::V4(ref n) => Some(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))
+                    ..=std::net::IpAddr::V4(n.range_last()),
+            ),
+            _ => None,
         }
     }
 }
@@ -221,18 +258,19 @@ impl FilterMatchRoute for BgpAddrV4 {
     }
     fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match fi {
-            FilterItem::V4(ref n) => {
-                Some(BgpAddrV4::new(n.range_first(),n.prefixlen)..=BgpAddrV4::new(n.range_last(),32))
-            },
-            _ => None
+            FilterItem::V4(ref n) => Some(
+                BgpAddrV4::new(n.range_first(), n.prefixlen)..=BgpAddrV4::new(n.range_last(), 32),
+            ),
+            _ => None,
         }
     }
     fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match fi {
-            FilterItem::V4(ref n) => {
-                Some(BgpAddrV4::new(std::net::Ipv4Addr::new(0,0,0,0),0)..=BgpAddrV4::new(n.range_last(),32))
-            },
-            _ => None
+            FilterItem::V4(ref n) => Some(
+                BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0)
+                    ..=BgpAddrV4::new(n.range_last(), 32),
+            ),
+            _ => None,
         }
     }
 }
@@ -248,18 +286,19 @@ impl FilterMatchRoute for BgpAddrV6 {
     }
     fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match fi {
-            FilterItem::V6(ref n) => {
-                Some(BgpAddrV6::new(n.range_first(),n.prefixlen)..=BgpAddrV6::new(n.range_last(),128))
-            },
-            _ => None
+            FilterItem::V6(ref n) => Some(
+                BgpAddrV6::new(n.range_first(), n.prefixlen)..=BgpAddrV6::new(n.range_last(), 128),
+            ),
+            _ => None,
         }
     }
     fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match fi {
-            FilterItem::V6(ref n) => {
-                Some(BgpAddrV6::new(std::net::Ipv6Addr::new(0,0,0,0,0,0,0,0),0)..=BgpAddrV6::new(n.range_last(),128))
-            },
-            _ => None
+            FilterItem::V6(ref n) => Some(
+                BgpAddrV6::new(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0)
+                    ..=BgpAddrV6::new(n.range_last(), 128),
+            ),
+            _ => None,
         }
     }
 }
@@ -296,15 +335,10 @@ impl FilterMatchRoute for BgpMVPN3 {
             FilterItemMatchResult::Unknown => {}
             n => return n,
         };
-        match self.originator.match_item(&fi) {
-            FilterItemMatchResult::Unknown => {}
-            n => return n,
-        };
-        match self.source.match_item(&fi) {
-            FilterItemMatchResult::Unknown => {}
-            n => return n,
-        };
-        self.group.match_item(&fi)
+        let m1 = self.originator.match_item(&fi);
+        let m2 = self.source.match_item(&fi);
+        let m3 = self.group.match_item(&fi);
+        FilterItemMatchResult::multi(&[m1, m2, m3])
     }
 }
 impl FilterMatchRoute for BgpMVPN4 {
@@ -322,11 +356,9 @@ impl FilterMatchRoute for BgpMVPN5 {
             FilterItemMatchResult::Unknown => {}
             n => return n,
         };
-        match self.source.match_item(&fi) {
-            FilterItemMatchResult::Unknown => {}
-            n => return n,
-        };
-        self.group.match_item(&fi)
+        let m1 = self.source.match_item(&fi);
+        let m2 = self.group.match_item(&fi);
+        FilterItemMatchResult::multi(&[m1, m2])
     }
 }
 impl FilterMatchRoute for BgpMVPN67 {
@@ -335,11 +367,9 @@ impl FilterMatchRoute for BgpMVPN67 {
             FilterItemMatchResult::Unknown => {}
             n => return n,
         };
-        match self.rp.match_item(&fi) {
-            FilterItemMatchResult::Unknown => {}
-            n => return n,
-        };
-        self.group.match_item(&fi)
+        let m1 = self.rp.match_item(&fi);
+        let m2 = self.group.match_item(&fi);
+        FilterItemMatchResult::multi(&[m1, m2])
     }
 }
 impl FilterMatchRoute for BgpMVPN {
@@ -400,8 +430,17 @@ impl FilterMatchRoute for BgpEVPN {
         }
     }
 }
-impl FilterMatchRoute for BgpFlowSpec<BgpAddrV4> {
+impl FilterMatchRoute for BgpMdtV4 {
+    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        FilterItemMatchResult::multi(&[self.addr.match_item(&fi), fi.match_addr_v4(&self.group)])
+    }
 }
+impl FilterMatchRoute for BgpMdtV6 {
+    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        FilterItemMatchResult::multi(&[self.addr.match_item(&fi), fi.match_addr_v6(&self.group)])
+    }
+}
+impl FilterMatchRoute for BgpFlowSpec<BgpAddrV4> {}
 impl<T: BgpItem<T> + FilterMatchRoute + Clone> FilterMatchRoute for WithRd<T> {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
         //eprintln!("WithRd::match_item {:?} - {}", fi, self);
@@ -422,15 +461,19 @@ impl<T: BgpItem<T> + FilterMatchRoute + Clone> FilterMatchRoute for WithRd<T> {
     fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match T::get_subnet_range(fi) {
             None => None,
-            Some(r) => {
-                Some(Self::new(BgpRD::new(0,0),(*(r.start())).clone())..=Self::new(BgpRD::new(0xffffffff,0xffffffff),(*(r.end())).clone()))
-            }
+            Some(r) => Some(
+                Self::new(BgpRD::new(0, 0), (*(r.start())).clone())
+                    ..=Self::new(BgpRD::new(0xffffffff, 0xffffffff), (*(r.end())).clone()),
+            ),
         }
     }
     fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match T::get_supernet_range(fi) {
             None => None,
-            Some(r) => Some(Self::new(BgpRD::new(0,0),(*(r.start())).clone())..=Self::new(BgpRD::new(0xffffffff,0xffffffff),(*(r.end())).clone()))
+            Some(r) => Some(
+                Self::new(BgpRD::new(0, 0), (*(r.start())).clone())
+                    ..=Self::new(BgpRD::new(0xffffffff, 0xffffffff), (*(r.end())).clone()),
+            ),
         }
     }
 }
@@ -447,13 +490,17 @@ impl<T: BgpItem<T> + FilterMatchRoute + Clone> FilterMatchRoute for Labeled<T> {
     fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match T::get_subnet_range(fi) {
             None => None,
-            Some(r) => Some(Self::new_nl((*(r.start())).clone())..=Self::new_nl((*(r.end())).clone()))
+            Some(r) => {
+                Some(Self::new_nl((*(r.start())).clone())..=Self::new_nl((*(r.end())).clone()))
+            }
         }
     }
     fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match T::get_supernet_range(fi) {
             None => None,
-            Some(r) => Some(Self::new_nl((*(r.start())).clone())..=Self::new_nl((*(r.end())).clone()))
+            Some(r) => {
+                Some(Self::new_nl((*(r.start())).clone())..=Self::new_nl((*(r.end())).clone()))
+            }
         }
     }
 }
@@ -509,7 +556,7 @@ pub struct RouteFilterParams<'a> {
     pub onlyactive: bool,
 }
 impl<'a> RouteFilterParams<'a> {
-    pub fn new(flt:&'a RouteFilter, max_depth: usize, only_active: bool) -> RouteFilterParams {
+    pub fn new(flt: &'a RouteFilter, max_depth: usize, only_active: bool) -> RouteFilterParams {
         RouteFilterParams {
             filter: flt,
             maxdepth: max_depth,
@@ -519,7 +566,7 @@ impl<'a> RouteFilterParams<'a> {
 }
 pub struct RouteFilterSubnets<'a, 'b, T: FilterMatchRoute + BgpRIBKey> {
     filter: RouteFilterParams<'a>,
-    srcitr: ClonableIterator<'b,&'b T,&'b BgpSessionEntry>
+    srcitr: ClonableIterator<'b, &'b T, &'b BgpSessionEntry>,
 }
 impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSubnets<'a, 'b, T> {
     pub fn new(
@@ -529,36 +576,59 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSubnets<'a, 'b, T> {
         srcafi: &'b BgpRIBSafi<T>,
     ) -> RouteFilterSubnets<'a, 'b, T> {
         Self {
-            filter: RouteFilterParams::new(filter,maxdepth,onlyactive),
-            srcitr: 
-            match filter.find_least_subnet() {
+            filter: RouteFilterParams::new(filter, maxdepth, onlyactive),
+            srcitr: match filter.find_least_subnet() {
                 None => srcafi.get_iter(filter),
-                Some(fnet) => {
-                    match fnet.get_subnet_range::<T>() {
-                        None => clone_iter!(srcafi.items.iter()),
-                        Some(rng) => clone_iter!(srcafi.items.range(rng))
-                    }
-                }
+                Some(fnet) => match fnet.get_subnet_range::<T>() {
+                    None => clone_iter!(srcafi.items.iter()),
+                    Some(rng) => clone_iter!(srcafi.items.range(rng)),
+                },
             },
         }
     }
 }
-impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator for RouteFilterSubnets<'a, 'b, T> {
+impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
+    for RouteFilterSubnets<'a, 'b, T>
+{
     type Item = (&'b T, &'b BgpSessionEntry);
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.srcitr.next() {
                 None => break,
                 Some(q) => {
-                    if q.1.items.iter().find(|ssitr|{
-                        ssitr.1.items.iter().find(|pitr|{
-                           pitr.1.items.iter()
-                           .filter(|hr| if self.filter.onlyactive { hr.1.active } else { true })
-                           .skip(if pitr.1.items.len() > self.filter.maxdepth { pitr.1.items.len() - self.filter.maxdepth } else {  0  }).find(|histitem|{
-                            self.filter.filter.match_route(q.0, &histitem.1.attrs)  == FilterItemMatchResult::Yes
-                           }).is_some()
-                        }).is_some()
-                    }).is_some()
+                    if q.1
+                        .items
+                        .iter()
+                        .find(|ssitr| {
+                            ssitr
+                                .1
+                                .items
+                                .iter()
+                                .find(|pitr| {
+                                    pitr.1
+                                        .items
+                                        .iter()
+                                        .filter(|hr| {
+                                            if self.filter.onlyactive {
+                                                hr.1.active
+                                            } else {
+                                                true
+                                            }
+                                        })
+                                        .skip(if pitr.1.items.len() > self.filter.maxdepth {
+                                            pitr.1.items.len() - self.filter.maxdepth
+                                        } else {
+                                            0
+                                        })
+                                        .find(|histitem| {
+                                            self.filter.filter.match_route(q.0, &histitem.1.attrs)
+                                                == FilterItemMatchResult::Yes
+                                        })
+                                        .is_some()
+                                })
+                                .is_some()
+                        })
+                        .is_some()
                     {
                         return Some(q);
                     }
@@ -570,7 +640,7 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator for RouteFilte
 }
 pub struct RouteFilterSupernets<'a, 'b, T: FilterMatchRoute + BgpRIBKey> {
     filter: RouteFilterParams<'a>,
-    srcitr: ClonableIterator<'b,&'b T,&'b BgpSessionEntry>
+    srcitr: ClonableIterator<'b, &'b T, &'b BgpSessionEntry>,
 }
 impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSupernets<'a, 'b, T> {
     pub fn new(
@@ -594,22 +664,51 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSupernets<'a, 'b, T> {
         }
     }
 }
-impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator for RouteFilterSupernets<'a, 'b, T> {
+impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
+    for RouteFilterSupernets<'a, 'b, T>
+{
     type Item = (&'b T, &'b BgpSessionEntry);
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.srcitr.next() {
                 None => break,
                 Some(q) => {
-                    if q.1.items.iter().find(|ssitr|{
-                        ssitr.1.items.iter().find(|pitr|{
-                           pitr.1.items.iter()
-                           .filter(|hr| if self.filter.onlyactive { hr.1.active } else { true })
-                           .skip(if pitr.1.items.len() > self.filter.maxdepth { pitr.1.items.len() - self.filter.maxdepth } else {  0  }).find(|histitem|{
-                            self.filter.filter.match_super_route(q.0, &histitem.1.attrs)  == FilterItemMatchResult::Yes
-                           }).is_some()
-                        }).is_some()
-                    }).is_some() {
+                    if q.1
+                        .items
+                        .iter()
+                        .find(|ssitr| {
+                            ssitr
+                                .1
+                                .items
+                                .iter()
+                                .find(|pitr| {
+                                    pitr.1
+                                        .items
+                                        .iter()
+                                        .filter(|hr| {
+                                            if self.filter.onlyactive {
+                                                hr.1.active
+                                            } else {
+                                                true
+                                            }
+                                        })
+                                        .skip(if pitr.1.items.len() > self.filter.maxdepth {
+                                            pitr.1.items.len() - self.filter.maxdepth
+                                        } else {
+                                            0
+                                        })
+                                        .find(|histitem| {
+                                            self.filter
+                                                .filter
+                                                .match_super_route(q.0, &histitem.1.attrs)
+                                                == FilterItemMatchResult::Yes
+                                        })
+                                        .is_some()
+                                })
+                                .is_some()
+                        })
+                        .is_some()
+                    {
                         return Some(q);
                     }
                 }
@@ -632,7 +731,7 @@ impl RouteFilter {
         }
     }
     pub fn fromstr(st: &str) -> RouteFilter {
-        let mut ret=Self::new();
+        let mut ret = Self::new();
         ret.parse(st);
         ret
     }
@@ -677,11 +776,11 @@ impl RouteFilter {
         if self.terms.len() < 1 {
             return FilterItemMatchResult::Yes;
         }
-        let mut cnt:usize = 0;
+        let mut cnt: usize = 0;
         for i in self.terms.iter() {
             if i.item.kind() == FilterItemKind::Attr {
                 match i.match_attr(attr) {
-                    FilterItemMatchResult::Unknown => {},
+                    FilterItemMatchResult::Unknown => {}
                     n => {
                         return n;
                     }
@@ -767,100 +866,102 @@ impl RouteFilter {
     fn find_least_subnet<'a>(&'a self) -> Option<&'a FilterItem> {
         let mut ret: Option<&'a FilterItem> = None;
         for i in self.terms.iter() {
-            if i.predicate==FilterItemMatchResult::No {
-                continue
+            if i.predicate == FilterItemMatchResult::No {
+                continue;
             };
             match i.item {
-                FilterItem::V4(ref r) => {
-                    match ret {
-                        None => {ret = Some(&i.item)}
-                        Some(lve) => {
-                          match lve {
-                              FilterItem::V4(lv) => {
-                                if r.prefixlen>lv.prefixlen {
-                                    ret = Some(&i.item);
-                                }
-                              }
-                              _ => {}
-                          }
-                        }
-                    }
-                }
-                FilterItem::V6(ref r) => {
-                    match ret {
-                        None => {ret = Some(&i.item)}
-                        Some(lve) => {
-                          match lve {
-                              FilterItem::V6(lv) => {
-                                if r.prefixlen>lv.prefixlen {
-                                    ret = Some(&i.item);
-                                }
-                              }
-                              _ => {
+                FilterItem::V4(ref r) => match ret {
+                    None => ret = Some(&i.item),
+                    Some(lve) => match lve {
+                        FilterItem::V4(lv) => {
+                            if r.prefixlen > lv.prefixlen {
                                 ret = Some(&i.item);
-                              }
-                          }
+                            }
                         }
-                    }
-                }
+                        _ => {}
+                    },
+                },
+                FilterItem::V6(ref r) => match ret {
+                    None => ret = Some(&i.item),
+                    Some(lve) => match lve {
+                        FilterItem::V6(lv) => {
+                            if r.prefixlen > lv.prefixlen {
+                                ret = Some(&i.item);
+                            }
+                        }
+                        _ => {
+                            ret = Some(&i.item);
+                        }
+                    },
+                },
                 _ => {}
             }
-        };
+        }
         ret
     }
     pub fn find_aspath_item<'a>(&'a self) -> BTreeSet<BgpAS> {
         let mut ret: BTreeSet<BgpAS> = BTreeSet::new();
         for i in self.terms.iter() {
-            if i.predicate==FilterItemMatchResult::No {
-                continue
+            if i.predicate == FilterItemMatchResult::No {
+                continue;
             };
             match &i.item {
-              FilterItem::ASPath(asp) => {
-               match asp {
-                FilterASPath::Contains(p) => p.value.iter().for_each(|x| {ret.insert(x.clone());}),
-                FilterASPath::StartsWith(p) => p.value.iter().for_each(|x| {ret.insert(x.clone());}),
-                FilterASPath::EndsWith(p) => p.value.iter().for_each(|x| {ret.insert(x.clone());}),
-                FilterASPath::FullMatch(p) => p.value.iter().for_each(|x| {ret.insert(x.clone());}),
-                FilterASPath::Empty => {}
-               }
-              },
-              _ => {}
+                FilterItem::ASPath(asp) => match asp {
+                    FilterASPath::Contains(p) => p.value.iter().for_each(|x| {
+                        ret.insert(x.clone());
+                    }),
+                    FilterASPath::StartsWith(p) => p.value.iter().for_each(|x| {
+                        ret.insert(x.clone());
+                    }),
+                    FilterASPath::EndsWith(p) => p.value.iter().for_each(|x| {
+                        ret.insert(x.clone());
+                    }),
+                    FilterASPath::FullMatch(p) => p.value.iter().for_each(|x| {
+                        ret.insert(x.clone());
+                    }),
+                    FilterASPath::Empty => {}
+                },
+                _ => {}
             }
-        };
+        }
         ret
     }
     pub fn find_community_item<'a>(&'a self) -> BTreeSet<BgpCommunity> {
         let mut ret: BTreeSet<BgpCommunity> = BTreeSet::new();
         for i in self.terms.iter() {
-            if i.predicate==FilterItemMatchResult::No {
-                continue
+            if i.predicate == FilterItemMatchResult::No {
+                continue;
             };
             match &i.item {
-              FilterItem::Community(x) => {
-                ret.insert(x.clone());
-              },
-              _ => {}
+                FilterItem::Community(x) => {
+                    ret.insert(x.clone());
+                }
+                _ => {}
             }
-        };
+        }
         ret
     }
     pub fn find_extcommunity_item<'a>(&'a self) -> BTreeSet<BgpExtCommunity> {
         let mut ret: BTreeSet<BgpExtCommunity> = BTreeSet::new();
         for i in self.terms.iter() {
-            if i.predicate==FilterItemMatchResult::No {
-                continue
+            if i.predicate == FilterItemMatchResult::No {
+                continue;
             };
             match &i.item {
-              FilterItem::ExtCommunity(x) => {
-                match x {
-                    FilterExtComm::PairNum(t) => {ret.insert(BgpExtCommunity::rt_asn(t.0 as u16,t.1));},
-                    FilterExtComm::PairNumIP(t) => {ret.insert(BgpExtCommunity::rt_ipn(t.0.addr,t.1 as u16));},
-                    _ => {},
-                };
-              },
-              _ => {}
+                FilterItem::ExtCommunity(x) => {
+                    match x {
+                        FilterExtComm::PairNum(t) => {
+                            ret.insert(BgpExtCommunity::rt_asn(t.0 as u16, t.1));
+                        }
+                        FilterExtComm::PairNumIP(t) => {
+                            ret.insert(BgpExtCommunity::rt_ipn(t.0.addr, t.1 as u16));
+                        }
+                        _ => {}
+                    };
+                }
+                _ => {}
             }
-        };
+        }
         ret
     }
 }
@@ -927,7 +1028,12 @@ impl FilterItem {
                     },
                     None => 32,
                 };
-                return FilterItem::V4(BgpAddrV4::new(addr, pfx));
+                let adr = BgpAddrV4::new(addr, pfx);
+                if adr.is_multicast() {
+                    return FilterItem::MCV4(adr);
+                } else {
+                    return FilterItem::V4(adr);
+                }
             }
             _ => {}
         };
@@ -951,7 +1057,12 @@ impl FilterItem {
                     },
                     None => 128,
                 };
-                return FilterItem::V6(BgpAddrV6::new(addr, pfx));
+                let adr = BgpAddrV6::new(addr, pfx);
+                if adr.is_multicast() {
+                    return FilterItem::MCV6(adr);
+                } else {
+                    return FilterItem::V6(adr);
+                }
             }
             _ => {}
         };
@@ -1178,19 +1289,89 @@ impl FilterItem {
                 };
             };
         };
-        eprintln!("Unknown filter item '{}'", itemstr);
+        warn!("Unknown filter item '{}'", itemstr);
         FilterItem::None
     }
     pub fn match_sockaddr(&self, addr: &std::net::IpAddr) -> FilterItemMatchResult {
         match self {
             FilterItem::V4(net) => match addr {
-                std::net::IpAddr::V4(a) => net.in_subnet(a).into(),
+                std::net::IpAddr::V4(a) => {
+                    if is_multicast(addr) {
+                        FilterItemMatchResult::Unknown
+                    } else {
+                        net.in_subnet(a).into()
+                    }
+                }
+                _ => FilterItemMatchResult::Unknown,
+            },
+            FilterItem::MCV4(net) => match addr {
+                std::net::IpAddr::V4(a) => {
+                    if is_multicast(addr) {
+                        net.in_subnet(a).into()
+                    } else {
+                        FilterItemMatchResult::Unknown
+                    }
+                }
                 _ => FilterItemMatchResult::Unknown,
             },
             FilterItem::V6(net) => match addr {
-                std::net::IpAddr::V6(a) => net.in_subnet(a).into(),
+                std::net::IpAddr::V6(a) => {
+                    if is_multicast(addr) {
+                        FilterItemMatchResult::Unknown
+                    } else {
+                        net.in_subnet(a).into()
+                    }
+                }
                 _ => FilterItemMatchResult::Unknown,
             },
+            FilterItem::MCV6(net) => match addr {
+                std::net::IpAddr::V6(a) => {
+                    if is_multicast(addr) {
+                        net.in_subnet(a).into()
+                    } else {
+                        FilterItemMatchResult::Unknown
+                    }
+                }
+                _ => FilterItemMatchResult::Unknown,
+            },
+            _ => FilterItemMatchResult::Unknown,
+        }
+    }
+    pub fn match_addr_v4(&self, addr: &std::net::Ipv4Addr) -> FilterItemMatchResult {
+        match self {
+            FilterItem::V4(net) => {
+                if is_multicast_v4(addr) {
+                    FilterItemMatchResult::Unknown
+                } else {
+                    net.in_subnet(addr).into()
+                }
+            }
+            FilterItem::MCV4(net) => {
+                if is_multicast_v4(addr) {
+                    net.in_subnet(addr).into()
+                } else {
+                    FilterItemMatchResult::Unknown
+                }
+            }
+            _ => FilterItemMatchResult::Unknown,
+        }
+    }
+    pub fn match_addr_v6(&self, addr: &std::net::Ipv6Addr) -> FilterItemMatchResult {
+        match self {
+            FilterItem::V6(net) => {
+                if is_multicast_v6(addr) {
+                    FilterItemMatchResult::Unknown
+                } else {
+                    net.in_subnet(addr).into()
+                }
+            }
+            FilterItem::MCV6(net) => {
+                if is_multicast_v6(addr) {
+                    net.in_subnet(addr).into()
+                } else {
+                    FilterItemMatchResult::Unknown
+                }
+            }
             _ => FilterItemMatchResult::Unknown,
         }
     }
@@ -1214,7 +1395,20 @@ impl FilterItem {
     }
     pub fn match_ipv4(&self, route: &BgpAddrV4) -> FilterItemMatchResult {
         match self {
-            FilterItem::V4(net) => net.contains(route).into(),
+            FilterItem::V4(net) => {
+                if route.is_multicast() {
+                    FilterItemMatchResult::Unknown
+                } else {
+                    net.contains(route).into()
+                }
+            }
+            FilterItem::MCV4(net) => {
+                if route.is_multicast() {
+                    net.contains(route).into()
+                } else {
+                    FilterItemMatchResult::Unknown
+                }
+            }
             FilterItem::Num(n) => {
                 ((route.prefixlen as u64) == *n || (route.prefixlen as u64) == *n).into()
             }
@@ -1226,7 +1420,20 @@ impl FilterItem {
     }
     pub fn match_ipv6(&self, route: &BgpAddrV6) -> FilterItemMatchResult {
         match self {
-            FilterItem::V6(net) => net.contains(route).into(),
+            FilterItem::V6(net) => {
+                if route.is_multicast() {
+                    FilterItemMatchResult::Unknown
+                } else {
+                    net.contains(route).into()
+                }
+            }
+            FilterItem::MCV6(net) => {
+                if route.is_multicast() {
+                    net.contains(route).into()
+                } else {
+                    FilterItemMatchResult::Unknown
+                }
+            }
             FilterItem::Num(n) => FilterItemMatchResult::soft(
                 (route.prefixlen as u64) == *n || (route.prefixlen as u64) == *n,
             ),
@@ -1270,12 +1477,12 @@ impl FilterItem {
                     match ec.match_item(self) {
                         FilterItemMatchResult::Unknown => {}
                         FilterItemMatchResult::Yes => {
-                            if ret==FilterItemMatchResult::Unknown {
+                            if ret == FilterItemMatchResult::Unknown {
                                 ret = FilterItemMatchResult::Yes
                             }
                         }
                         n => {
-                            ret=n;
+                            ret = n;
                         }
                     }
                 }
@@ -1326,10 +1533,10 @@ impl FilterItem {
             _ => FilterItemMatchResult::Unknown,
         }
     }
-    fn get_subnet_range<T:FilterMatchRoute>(&self) -> Option<std::ops::RangeInclusive<T>> {
+    fn get_subnet_range<T: FilterMatchRoute>(&self) -> Option<std::ops::RangeInclusive<T>> {
         T::get_subnet_range(self)
     }
-    fn get_supernet_range<T:FilterMatchRoute>(&self) -> Option<std::ops::RangeInclusive<T>> {
+    fn get_supernet_range<T: FilterMatchRoute>(&self) -> Option<std::ops::RangeInclusive<T>> {
         T::get_supernet_range(self)
     }
 }
@@ -1471,8 +1678,8 @@ impl FilterTerm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::rc::Rc;
     use crate::config::*;
+    use std::rc::Rc;
 
     #[test]
     fn test_ribfilter_fi_ipv4_host() {
@@ -1685,7 +1892,7 @@ mod tests {
             .contains(&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32)));
         assert!(BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 16)
             .contains(&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24)));
-        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10,HistoryChangeMode::EveryUpdate);
+        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10, HistoryChangeMode::EveryUpdate);
         let attrs = std::rc::Rc::new(BgpAttrs::new());
         safi.handle_updates_afi(
             0,
@@ -1713,7 +1920,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_num1() {
-        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10,HistoryChangeMode::EveryUpdate);
+        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10, HistoryChangeMode::EveryUpdate);
         let attrs = std::rc::Rc::new(BgpAttrs::new());
         safi.handle_updates_afi(
             0,
@@ -1764,7 +1971,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_re1() {
-        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10,HistoryChangeMode::EveryUpdate);
+        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10, HistoryChangeMode::EveryUpdate);
         let attrs = std::rc::Rc::new(BgpAttrs::new());
         safi.handle_updates_afi(
             0,
@@ -1798,7 +2005,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_extrt1() {
-        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10,HistoryChangeMode::EveryUpdate);
+        let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10, HistoryChangeMode::EveryUpdate);
         {
             let attrs1 = BgpAttrs {
                 origin: BgpAttrOrigin::Incomplete,
@@ -1912,7 +2119,7 @@ mod tests {
     }
     #[test]
     fn test_ribfilter_range1() {
-        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10,HistoryChangeMode::EveryUpdate);
+        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10, HistoryChangeMode::EveryUpdate);
         let attrs1 = BgpAttrs {
             origin: BgpAttrOrigin::Incomplete,
             nexthop: BgpAddr::None,
@@ -1948,14 +2155,25 @@ mod tests {
         let mut flt = RouteFilter::new();
         flt.parse("10.0.0.0/24");
         assert_eq!(flt.iter_nets(&safi, 10, false).count(), 4);
-        for (ref key, ref _value) in safi.items.range(&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24)..&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 1, 0), 24)) {
+        for (ref key, ref _value) in safi.items.range(
+            &BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24)
+                ..&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 1, 0), 24),
+        ) {
             eprintln!("{}", key);
-        };
-        assert_eq!(safi.items.range(&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24)..&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 255), 24)).count(),3);
+        }
+        assert_eq!(
+            safi.items
+                .range(
+                    &BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24)
+                        ..&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 255), 24)
+                )
+                .count(),
+            3
+        );
     }
     #[test]
     fn test_ribfilter_range2() {
-        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10,HistoryChangeMode::EveryUpdate);
+        let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10, HistoryChangeMode::EveryUpdate);
         let attrs1 = BgpAttrs {
             origin: BgpAttrOrigin::Incomplete,
             nexthop: BgpAddr::None,
@@ -1992,11 +2210,12 @@ mod tests {
         flt.parse("10.0.0.0/24");
         for (ref key, ref _value) in flt.iter_nets(&safi, 10, false) {
             eprintln!("{}", key);
-        };
+        }
     }
     #[test]
     fn test_ribfilter_range3() {
-        let mut safi = BgpRIBSafi::<Labeled<WithRd<BgpAddrV4>>>::new(10,HistoryChangeMode::EveryUpdate);
+        let mut safi =
+            BgpRIBSafi::<Labeled<WithRd<BgpAddrV4>>>::new(10, HistoryChangeMode::EveryUpdate);
         let attrs1 = BgpAttrs {
             origin: BgpAttrOrigin::Incomplete,
             nexthop: BgpAddr::None,
@@ -2020,22 +2239,90 @@ mod tests {
         safi.handle_updates_afi(
             0,
             vec![
-                Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![1]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,1), BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 255), 32) ) ),
-                Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![2]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,1), BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32) ) ),
-                Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![3]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,3), BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32) ) ),
-                Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![4]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,4), BgpAddrV4::new(std::net::Ipv4Addr::new(11, 0, 0, 1), 32) ) ),
-                Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![5]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,5), BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 2), 32) ) ),
-                Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![6]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,6), BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24) ) ),
-                Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![7]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,7), BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 32) ) ),
-                Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![8]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,4), BgpAddrV4::new(std::net::Ipv4Addr::new(12, 0, 0, 1), 32) ) ),
+                Labeled::<WithRd<BgpAddrV4>>::new(
+                    MplsLabels::fromvec(vec![1]),
+                    WithRd::<BgpAddrV4>::new(
+                        BgpRD::new(1, 1),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 255), 32),
+                    ),
+                ),
+                Labeled::<WithRd<BgpAddrV4>>::new(
+                    MplsLabels::fromvec(vec![2]),
+                    WithRd::<BgpAddrV4>::new(
+                        BgpRD::new(1, 1),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
+                    ),
+                ),
+                Labeled::<WithRd<BgpAddrV4>>::new(
+                    MplsLabels::fromvec(vec![3]),
+                    WithRd::<BgpAddrV4>::new(
+                        BgpRD::new(1, 3),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
+                    ),
+                ),
+                Labeled::<WithRd<BgpAddrV4>>::new(
+                    MplsLabels::fromvec(vec![4]),
+                    WithRd::<BgpAddrV4>::new(
+                        BgpRD::new(1, 4),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(11, 0, 0, 1), 32),
+                    ),
+                ),
+                Labeled::<WithRd<BgpAddrV4>>::new(
+                    MplsLabels::fromvec(vec![5]),
+                    WithRd::<BgpAddrV4>::new(
+                        BgpRD::new(1, 5),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 2), 32),
+                    ),
+                ),
+                Labeled::<WithRd<BgpAddrV4>>::new(
+                    MplsLabels::fromvec(vec![6]),
+                    WithRd::<BgpAddrV4>::new(
+                        BgpRD::new(1, 6),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24),
+                    ),
+                ),
+                Labeled::<WithRd<BgpAddrV4>>::new(
+                    MplsLabels::fromvec(vec![7]),
+                    WithRd::<BgpAddrV4>::new(
+                        BgpRD::new(1, 7),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 32),
+                    ),
+                ),
+                Labeled::<WithRd<BgpAddrV4>>::new(
+                    MplsLabels::fromvec(vec![8]),
+                    WithRd::<BgpAddrV4>::new(
+                        BgpRD::new(1, 4),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(12, 0, 0, 1), 32),
+                    ),
+                ),
             ],
             std::rc::Rc::new(attrs1),
         );
         assert_eq!(safi.len(), 8);
-        assert_eq!(RouteFilter::fromstr("10.0.0.0/24").iter_nets(&safi, 10, false).count(), 6);
-        assert_eq!(RouteFilter::fromstr("rd:1:4").iter_nets(&safi, 10, false).count(), 2);
-        assert_eq!(RouteFilter::fromstr("rd:1:1").iter_nets(&safi, 10, false).count(), 2);
-        assert_eq!(RouteFilter::fromstr("10.0.0.1").iter_nets(&safi, 10, false).count(), 2);
+        assert_eq!(
+            RouteFilter::fromstr("10.0.0.0/24")
+                .iter_nets(&safi, 10, false)
+                .count(),
+            6
+        );
+        assert_eq!(
+            RouteFilter::fromstr("rd:1:4")
+                .iter_nets(&safi, 10, false)
+                .count(),
+            2
+        );
+        assert_eq!(
+            RouteFilter::fromstr("rd:1:1")
+                .iter_nets(&safi, 10, false)
+                .count(),
+            2
+        );
+        assert_eq!(
+            RouteFilter::fromstr("10.0.0.1")
+                .iter_nets(&safi, 10, false)
+                .count(),
+            2
+        );
     }
     #[test]
     fn test_ribfilter_4() {
@@ -2050,7 +2337,9 @@ mod tests {
             aspath: Rc::new(BgpASpath::new()),
             comms: Rc::new(BgpCommunityList::new()),
             lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity::rt_asn(1,1)])),
+            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![
+                BgpExtCommunity::rt_asn(1, 1),
+            ])),
             med: None,
             localpref: None,
         };
@@ -2065,18 +2354,94 @@ mod tests {
             aspath: Rc::new(BgpASpath::new()),
             comms: Rc::new(BgpCommunityList::new()),
             lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity::rt_asn(1,2)])),
+            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![
+                BgpExtCommunity::rt_asn(1, 2),
+            ])),
             med: None,
             localpref: None,
         };
-        let r1=Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![1]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,1), BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 255), 32) ) );
-        let r2=Labeled::<WithRd::<BgpAddrV4>>::new(MplsLabels::fromvec(vec![1]),WithRd::<BgpAddrV4>::new(BgpRD::new(1,1), BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0) ) );
-        let rf=RouteFilter::fromstr("10.0.0.0/24 rt:1:1");
-        assert_eq!(rf.match_route(&r1,&attrs1),FilterItemMatchResult::Yes);
-        assert_eq!(rf.match_route(&r1,&attrs2),FilterItemMatchResult::Unknown);
-        assert!(rf.match_route(&r2,&attrs1)!=FilterItemMatchResult::Yes);
-        assert!(rf.match_route(&r2,&attrs2)!=FilterItemMatchResult::Yes);
-        assert_eq!(rf.match_super_route(&r2,&attrs1),FilterItemMatchResult::Yes);
-        assert!(rf.match_super_route(&r2,&attrs2)!=FilterItemMatchResult::Yes);
+        let r1 = Labeled::<WithRd<BgpAddrV4>>::new(
+            MplsLabels::fromvec(vec![1]),
+            WithRd::<BgpAddrV4>::new(
+                BgpRD::new(1, 1),
+                BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 255), 32),
+            ),
+        );
+        let r2 = Labeled::<WithRd<BgpAddrV4>>::new(
+            MplsLabels::fromvec(vec![1]),
+            WithRd::<BgpAddrV4>::new(
+                BgpRD::new(1, 1),
+                BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0),
+            ),
+        );
+        let rf = RouteFilter::fromstr("10.0.0.0/24 rt:1:1");
+        assert_eq!(rf.match_route(&r1, &attrs1), FilterItemMatchResult::Yes);
+        assert_eq!(rf.match_route(&r1, &attrs2), FilterItemMatchResult::Unknown);
+        assert!(rf.match_route(&r2, &attrs1) != FilterItemMatchResult::Yes);
+        assert!(rf.match_route(&r2, &attrs2) != FilterItemMatchResult::Yes);
+        assert_eq!(
+            rf.match_super_route(&r2, &attrs1),
+            FilterItemMatchResult::Yes
+        );
+        assert!(rf.match_super_route(&r2, &attrs2) != FilterItemMatchResult::Yes);
+    }
+    #[test]
+    fn test_ribfilter_mvpn_1() {
+        let attrs1 = BgpAttrs {
+            origin: BgpAttrOrigin::Incomplete,
+            nexthop: BgpAddr::None,
+            atomicaggregate: None,
+            aggregatoras: None,
+            originator: None,
+            clusterlist: None,
+            pmsi_ta: None,
+            aspath: Rc::new(BgpASpath::new()),
+            comms: Rc::new(BgpCommunityList::new()),
+            lcomms: Rc::new(BgpLargeCommunityList::new()),
+            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![
+                BgpExtCommunity::rt_asn(1, 1),
+            ])),
+            med: None,
+            localpref: None,
+        };
+        let attrs2 = BgpAttrs {
+            origin: BgpAttrOrigin::Incomplete,
+            nexthop: BgpAddr::None,
+            atomicaggregate: None,
+            aggregatoras: None,
+            originator: None,
+            clusterlist: None,
+            pmsi_ta: None,
+            aspath: Rc::new(BgpASpath::new()),
+            comms: Rc::new(BgpCommunityList::new()),
+            lcomms: Rc::new(BgpLargeCommunityList::new()),
+            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![
+                BgpExtCommunity::rt_asn(1, 2),
+            ])),
+            med: None,
+            localpref: None,
+        };
+        let r1 = BgpMVPN::T5(BgpMVPN5 {
+            rd: BgpRD::new(1, 1),
+            source: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 1, 1, 1)),
+            group: std::net::IpAddr::V4(std::net::Ipv4Addr::new(224, 1, 1, 1)),
+        });
+        let r2 = BgpMVPN::T5(BgpMVPN5 {
+            rd: BgpRD::new(2, 1),
+            source: std::net::IpAddr::V4(std::net::Ipv4Addr::new(11, 1, 1, 1)),
+            group: std::net::IpAddr::V4(std::net::Ipv4Addr::new(225, 1, 1, 1)),
+        });
+        let rf1 = RouteFilter::fromstr("10.1.1.0/24");
+        assert_eq!(rf1.match_route(&r1, &attrs1), FilterItemMatchResult::Yes);
+        assert_eq!(rf1.match_route(&r2, &attrs2), FilterItemMatchResult::No);
+        let rf2 = RouteFilter::fromstr("11.1.1.0/24");
+        assert_eq!(rf2.match_route(&r1, &attrs1), FilterItemMatchResult::No);
+        assert_eq!(rf2.match_route(&r2, &attrs2), FilterItemMatchResult::Yes);
+        let rf1 = RouteFilter::fromstr("224.1.1.0/24");
+        assert_eq!(rf1.match_route(&r1, &attrs1), FilterItemMatchResult::Yes);
+        assert_eq!(rf1.match_route(&r2, &attrs2), FilterItemMatchResult::No);
+        let rf2 = RouteFilter::fromstr("225.1.1.0/24");
+        assert_eq!(rf2.match_route(&r1, &attrs1), FilterItemMatchResult::No);
+        assert_eq!(rf2.match_route(&r2, &attrs2), FilterItemMatchResult::Yes);
     }
 }

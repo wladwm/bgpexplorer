@@ -1,5 +1,5 @@
-use crate::*;
 use crate::config::*;
+use crate::*;
 use chrono::prelude::*;
 use dnssector::*;
 use regex::Regex;
@@ -207,7 +207,7 @@ pub struct WhoisSvr {
 static INVALID_WHOIS: &[u8] = b"Invalid WHOIS query";
 
 impl WhoisSvr {
-    pub fn new(conf:&SvcConfig) -> WhoisSvr {
+    pub fn new(conf: &SvcConfig) -> WhoisSvr {
         WhoisSvr {
             whs: conf.whoisconfig.clone(),
             dns: conf.whoisdnses.clone(),
@@ -253,7 +253,23 @@ impl WhoisSvr {
                 Regex::new(r"([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)").unwrap();
         }
         match RE_IPV4.captures(target.as_str()) {
-            None => {}
+            None => {
+                if let Ok(ipv6) = target.parse::<std::net::Ipv6Addr>() {
+                    let oct = ipv6.octets();
+                    let mut trg: String = "".to_string();
+                    for o in oct.iter().rev() {
+                        trg += format!("{:x}.{:x}.", o & 0xf, (o >> 4)).as_str();
+                    }
+                    trg += "ip6.arpa.";
+                    let res = match self.do_query_dns("PTR", trg).await {
+                        Ok(q) => q,
+                        Err(e) => return Err(e),
+                    };
+                    let lkey: sled::IVec = WhoisKey::dns_query(format!("{}", ipv6)).into();
+                    self.db.insert(lkey, WhoisRec::new(res.clone())).unwrap();
+                    return Ok(res);
+                }
+            }
             Some(caps) => {
                 if let (Some(c1), Some(c2), Some(c3), Some(c4)) =
                     (caps.get(1), caps.get(2), caps.get(3), caps.get(4))
@@ -277,7 +293,7 @@ impl WhoisSvr {
                 };
             }
         };
-        Err(WhoIsError::MapError("Invalid IPv4"))
+        Err(WhoIsError::MapError("Invalid IP"))
     }
     pub async fn query_dns_ptr(self: &Arc<WhoisSvr>, target: String) -> Result<String, WhoIsError> {
         let lkey: sled::IVec = WhoisKey::dns_query(target.clone()).into();
@@ -297,13 +313,13 @@ impl WhoisSvr {
                                 return Ok(q.val);
                             }
                             Err(e) => {
-                                eprintln!("Deserialize error: {:?}", e);
+                                warn!("Deserialize error: {:?}", e);
                             }
                         };
                     };
                 };
             }
-            Err(e) => eprintln!("sled error: {:?}", e),
+            Err(e) => warn!("sled error: {:?}", e),
         };
         self.do_query_dns_ptr(target).await
     }
@@ -366,7 +382,7 @@ impl WhoisSvr {
                     }
                     return Ok(res);
                 }
-                println!("DNS: {:?} - {:?}", item.rr_type(), item.rdata_slice());
+                debug!("DNS: {:?} - {:?}", item.rr_type(), item.rdata_slice());
                 it = item.next();
             }
         };
@@ -398,7 +414,7 @@ impl WhoisSvr {
                         opts.server = Some(match WhoIsServerValue::from_string(whfnd) {
                             Ok(s) => s,
                             Err(e) => {
-                                eprintln!("Invalid whois server: {:?}", e);
+                                warn!("Invalid whois server: {:?}", e);
                                 continue;
                             }
                         });
@@ -458,13 +474,13 @@ impl WhoisSvr {
                                 return Ok(q.val);
                             }
                             Err(e) => {
-                                eprintln!("Deserialize error: {:?}", e);
+                                warn!("Deserialize error: {:?}", e);
                             }
                         };
                     };
                 };
             }
-            Err(e) => eprintln!("sled error: {:?}", e),
+            Err(e) => warn!("sled error: {:?}", e),
         };
         self.do_query_whois(target, checkitem).await
     }

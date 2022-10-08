@@ -4,6 +4,7 @@
 <head>
   <title>Routes</title>
   <meta http-equiv="content-type" content="text/html; charset=utf8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script type="text/javascript">
     var cnt_queries_running = 0;
     var show_default_extra = false;
@@ -110,9 +111,83 @@
       elm.style.display = (elm.style.display == 'none') ? 'block' : 'none';
     }
     function escapeHTML(s) {
-      return ("" + s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+      let q = s;
+      if (typeof q == "object") q=JSON.stringify(q);
+      return ("" + q).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    }
+    function nrm16(n){
+      if(n<0) return n+65536;
+      return n;
+    }
+    function escapeCommunity(comm) {
+      if (typeof comm == "number") {
+        return ""+nrm16(comm >> 16)+":"+nrm16(comm & 65535);
+      }
+      if (typeof comm == "object") {
+        return JSON.stringify(comm);
+      }
+      return comm;
+    }
+    function getipv4ec(comm) {
+      return ""+((comm.a >> 8) & 0xff)+"."+(comm.a & 0xff)+"."+((comm.b >> 24) & 0xff)+"."+((comm.b >> 16) & 0xff);
+    }
+    function escapeExtCommunity(comm) {
+      if (typeof comm != "object") {
+        return comm;
+      }
+      if(comm.subtype==1) {
+        if(comm.ctype==6) return "esi-label:"+comm.a+":label="+(comm.b >> 8)+":"+(comm.b >> 0xff);
+        return "esi-label:"+comm.ctype+":"+comm.a+":"+comm.b;
+      }
+      if(comm.subtype==2) {
+        if(comm.ctype==0) return "ext-target:"+comm.a+":"+comm.b;
+        if(comm.ctype==1) return "ext-target:"+getipv4ec(comm)+":"+(comm.b & 0xffff);
+        return "ext-target:"+comm.ctype+":"+comm.a+":"+comm.b;
+      }
+      if(comm.subtype==3) {
+        if(comm.ctype==1) return "ext-origin:"+getipv4ec(comm)+":"+(comm.b & 0xffff);
+        return "ext-origin:"+comm.ctype+":"+comm.a+":"+comm.b;
+      }
+      if(comm.subtype==4) {
+        if(comm.ctype==6) return "evpn-l2-info:cf="+comm.a+":mtu="+(comm.b >> 16);
+        return "evpn-l2-info:"+comm.ctype+":"+comm.a+":"+comm.b;
+      }
+      if(comm.subtype==9) {
+        return "ext-src-as:"+comm.ctype+":"+comm.a+":"+comm.b;
+      }
+      if (comm.subtype == 10) {
+        if (comm.ctype == 1 || comm.ctype == 0x41) return "ext-import-rt:"+getipv4ec(comm)+":"+(comm.b & 0xffff);
+        return "ext-import-rt:"+comm.ctype+":"+comm.a+":"+comm.b;
+      }
+      if(comm.subtype==11) {
+        if(comm.ctype==1) return "ext-rt-import:"+getipv4ec(comm)+":"+(comm.b & 0xffff);
+        return "ext-rt-import:"+comm.ctype+":"+comm.a+":"+comm.b;
+      }
+      if(comm.subtype==12) {
+        if(comm.ctype==3) return "encapsulation:0x"+comm.b.toString(16);
+        return "encapsulation:"+comm.ctype+":"+comm.a+":"+comm.b;
+      }
+      return "ext:"+JSON.stringify(comm);
     }
     function escapeIpAddr(ipaddr) {
+      if(ipaddr == null) {
+        return ipaddr;
+      }
+      if (typeof ipaddr == "object") {
+       if ("V4" in ipaddr) {
+        return "<ip-addr val='" + ipaddr.V4 + "'></ip-addr>";
+       }
+       if ("V6" in ipaddr) {
+        return "<ip-addr val='" + ipaddr.V6 + "'></ip-addr>";
+       }
+       if ("V4RD" in ipaddr) {
+        return "<ip-addr val='" + ipaddr.V4RD.addr + "'></ip-addr>";
+       }
+       if ("V6RD" in ipaddr) {
+        return "<ip-addr val='" + ipaddr.V6RD.addr + "'></ip-addr>";
+       }
+       return "<ip-addr val='" + JSON.stringify(ipaddr) + "'></ip-addr>";
+      }
       return "<ip-addr val='" + ipaddr + "'></ip-addr>";
     }
     function escapeASN(asn) {
@@ -127,61 +202,68 @@
     }
     function textAttrs(attr, divo, divc) {
       let rtxt = divo;
-      if ("med" in attr) {
-        rtxt += "MED: " + attr["med"] + ", ";
+      if ("Med" in attr) if (attr["Med"]) {
+        rtxt += "MED: " + attr["Med"] + ", ";
       };
-      if ("localpref" in attr) {
-        rtxt += "Localpref: " + attr["localpref"] + ", ";
+      if ("Localpref" in attr) if (attr["Localpref"]) {
+        rtxt += "Localpref: " + attr["Localpref"] + ", ";
       };
-      if ("nexthop" in attr) {
-        rtxt += "from " + escapeIpAddr(attr["nexthop"]);
+      if ("Nexthop" in attr) {
+        rtxt += "from " + escapeIpAddr(attr["Nexthop"]);
       };
       rtxt += divc + divo;
-      if ("aspath" in attr) {
-        rtxt += "AS path: " + attr["aspath"].map(escapeASN).join(" ");
+      if ("Aspath" in attr) {
+        rtxt += "AS path: " + attr["Aspath"].map(escapeASN).join(" ");
       };
-      if ("origin" in attr) {
-        rtxt += " " + attr["origin"];
+      if ("Origin" in attr) {
+        rtxt += " " + attr["Origin"];
       };
       rtxt += divc;
-      if ("communities" in attr || "extcommunities" in attr) {
+      if ("Comms" in attr || "ExtComms" in attr) {
         rtxt += divo + "Communities:";
-        if ("communities" in attr) {
-          rtxt += " " + escapeHTML(attr["communities"].join(" "));
+        if ("Comms" in attr) {
+          rtxt += " " + attr["Comms"].map(escapeCommunity).join(" ");
         };
-        if ("extcommunities" in attr) {
-          rtxt += " " + escapeHTML(attr["extcommunities"].join(" "));
+        if ("ExtComms" in attr) {
+          rtxt += " " + attr["ExtComms"].map(escapeExtCommunity).join(" ");
         };
         rtxt += divc;
       };
-      if ("originator" in attr) {
-        rtxt += divo + "Originator: " + escapeIpAddr(attr["originator"]) + divc;
+      if ("Originator" in attr) if(attr["Originator"]) {
+        rtxt += divo + "Originator: " + escapeIpAddr(attr["Originator"]) + divc;
       };
-      if ("atomicaggregate" in attr) {
+      if ("atomicaggregate" in attr) if (attr["atomicaggregate"]) {
         rtxt += divo + "Atomic aggregate: " + escapeHTML(attr["atomicaggregate"]) + divc;
       };
-      if ("aggregatoras" in attr) {
-        let aa = attr["aggregatoras"];
-        rtxt += divo + "Aggregator: " + escapeIpAddr(aa["addr"]) + " " + escapeASN(aa["asn"]) + divc;
+      if ("Aggregatoras" in attr) {
+        let aa = attr["Aggregatoras"];
+        if (aa) {
+         rtxt += divo + "Aggregator: " + escapeIpAddr(aa["addr"]) + " " + escapeASN(aa["asn"]) + divc;
+        }
       };
-      if ("clusterlist" in attr) {
-        rtxt += divo + "Cluster list: " + attr["clusterlist"].map(escapeIpAddr).join(" ") + divc;
+      if ("Clusterlist" in attr) {
+        if (attr["Clusterlist"]) {
+         rtxt += divo + "Cluster list: " + attr["Clusterlist"].map(escapeIpAddr).join(" ") + divc;
+        }
       };
-      if ("pmsi_tunnel_attributes" in attr) {
-        rtxt += divo + "PMSI tunnel: " + escapeHTML(attr["pmsi_tunnel_attributes"]) + divc;
+      if ("PmsiTa" in attr) {
+        if (attr["PmsiTa"]) {
+         rtxt += divo + "PMSI tunnel: " + escapeHTML(attr["PmsiTa"]) + divc;
+        }
       }
       return rtxt;
     }
     function showTime(tms) {
-      return ("" + tms).replaceAll("T", " ");
+      let dt=new Date(parseInt("" + tms));
+      return (""+dt.getDay()).padStart(2,"0")+"."+(""+(dt.getMonth()+1)).padStart(2,"0")+"."+(""+dt.getFullYear()).padStart(4,"0")+" "+(""+dt.getHours()).padStart(2,"0")+":"+(""+dt.getMinutes()).padStart(2,"0")+":"+(""+dt.getSeconds()).padStart(2,"0");
     }
     function showAttr(route, sessionid, pathid, curtime, currec) {
       let rtxt = '';
-      let div = "<div class='attr-text" + (currec['active'] ? "" : " inactive") + "'>";
+      let div = "<div class='attr-text" + (currec['Active'] ? "" : " inactive") + "'>";
       rtxt += div + showTime(curtime) + "</div>";
-      rtxt += textAttrs(currec["attrs"], div, "</div>");
-      if ("labels" in currec) {
-        rtxt += div + "Labels: " + currec["labels"] + "</div>";
+      rtxt += textAttrs(currec["Attrs"], div, "</div>");
+      if ("Labels" in currec) if (currec["Labels"]) {
+        rtxt += div + "Labels: " + currec["Labels"] + "</div>";
       }
       return rtxt;
     }
@@ -237,7 +319,7 @@
       let rdiv = document.getElementById('result');
       try {
         result = JSON.parse(rtext);
-        document.getElementById('noroutes').style.display = Object.keys(result.items).length > 0 ? 'none' : 'block';
+        document.getElementById('noroutes').style.display = Object.keys(result).length > 0 ? 'none' : 'block';
       } catch (err) {
         rdiv.innerHTML = '';
         document.getElementById('noroutes').style.display = 'block';
@@ -271,8 +353,11 @@
       rtxt += "<div class='result-container'>";
       let rcnt = 0;
       let bgpsessids = Object.keys(bgp_sessions);
+      let relbl = new RegExp('<l:[0-9]+>', 'g');
+      let reflt = new RegExp('<([a-z]*):([^>]*)>', 'g');
       Object.keys(result.items).forEach((route) => {
-        rtxt += "<div class='route-nlri'>" + escapeHTML(route) + "</div><div class='sessions-container'>";
+        let hrf = encodeURIComponent(active_rib + '~' + route.replace(relbl, '').replace(reflt, "$1:$2").trim());
+        rtxt += "<div class='route-nlri'><a name='" + hrf + "'><a href='?" + hrf + "'>" + escapeHTML(route) + "</a></div><div class='sessions-container'>";
         let sessions = result.items[route];
         let sessids = Object.keys(sessions);
         sessids.forEach((sessionid) => {
@@ -299,7 +384,7 @@
       queryRib.Query((event) => {
         try {
           hidePopup();
-          if (event.target.status==200)
+          if (event.target.status == 200)
             showRoutes(event.target.responseText);
         } catch (err) {
           //queryRib.executeQuery();
@@ -336,7 +421,7 @@
       }
       let activeribs = new Array();
       let server_ribs = server_statistics["ribs"];
-      let ribs = ['ipv4u', 'ipv4m', 'ipv4lu', 'vpnv4u', 'vpnv4m', 'l2vpls', 'ipv6u', 'ipv6m', 'ipv6lu', 'vpnv6u', 'vpnv6m', 'mvpn', 'evpn', 'fs4u'];
+      let ribs = ['ipv4u', 'ipv4m', 'ipv4lu', 'vpnv4u', 'vpnv4m', 'l2vpls', 'ipv6u', 'ipv6m', 'ipv6lu', 'vpnv6u', 'vpnv6m', 'mvpn', 'evpn', 'fs4u', 'ipv4mdt', 'ipv6mdt'];
       ribs.forEach((rnm) => {
         if (rnm in server_ribs) {
           if (server_ribs[rnm] > 0) {
@@ -370,8 +455,26 @@
       ExecuteQuery();
     }
     function CheckStat() {
+      if (window.location.hash) {
+        let re1 = /^#([a-z0-9]+)~(.*)$/i;
+        let r = re1.exec(window.location.hash);
+        if (r) {
+          active_rib = decodeURIComponent(r[1]);
+          document.getElementById('filtertext').value = decodeURIComponent(r[2]);
+        };
+      } else {
+        let url_s = (window.location + '').split('?');
+        if (url_s.length == 2) {
+          let re1 = /^([a-z0-9]+)~(.*)$/i;
+          let r = re1.exec(url_s[1]);
+          if (r) {
+            active_rib = decodeURIComponent(r[1]);
+            document.getElementById('filtertext').value = decodeURIComponent(r[2]);
+          };
+        }
+      }
       queryStatistics.Query((event) => {
-        if (event.target.status!=200){
+        if (event.target.status != 200) {
           queryStatistics.executeQuery();
           return;
         }
@@ -384,7 +487,7 @@
         }
       }, "api/statistics");
       querySessions.Query((event) => {
-        if (event.target.status!=200){
+        if (event.target.status != 200) {
           querySessions.executeQuery();
           return;
         }
@@ -554,13 +657,13 @@
       queryWhois.Query((event) => {
         let restxt = event.target.responseText;
         if (idxDb) {
-          let dbreq = idxDb.transaction([kind], "readwrite").objectStore(kind).put({ 'id': reqval, 'when': new Date(), 'valid': event.target.status==200, 'text': restxt });
+          let dbreq = idxDb.transaction([kind], "readwrite").objectStore(kind).put({ 'id': reqval, 'when': new Date(), 'valid': event.target.status == 200, 'text': restxt });
           dbreq.onerror = () => { console.log("Put error") };
           dbreq.onsuccess = function () {
             return dbreq.result;
           }
         }
-        if(event.target.status==200) showPopupText(restxt);
+        if (event.target.status == 200) showPopupText(restxt);
       }, baseuri + encodeURI("" + reqval));
     }
     function ExecutePopupQuery(kind, baseuri, reqval) {

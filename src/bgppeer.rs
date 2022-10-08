@@ -7,7 +7,7 @@ use tokio::*;
 use zettabgp::prelude::*;
 
 pub struct BgpPeer<'a, H: BgpUpdateHandler> {
-    params: BgpSessionParams,
+    pub params: BgpSessionParams,
     peersock: tokio::net::TcpStream,
     keepalive_sent: DateTime<Local>,
     sessionid: BgpSessionId,
@@ -100,37 +100,73 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
         Ok(())
     }
     pub async fn start_active(&mut self) -> Result<(), BgpError> {
-        let bom = self.params.open_message();
-        let mut buf = [255 as u8; 255];
-        let sz = match bom.encode_to(&self.params, BgpPeer::<H>::get_message_body_ref(&mut buf)?) {
-            Err(e) => {
-                return Err(e);
+        info!("start_active");
+        loop {
+            let bom = self.params.open_message();
+            let mut buf = [255 as u8; 255];
+            let sz =
+                match bom.encode_to(&self.params, BgpPeer::<H>::get_message_body_ref(&mut buf)?) {
+                    Err(e) => {
+                        return Err(e);
+                    }
+                    Ok(sz) => sz,
+                };
+            let mysess = BgpPeerDesc::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), bom.clone());
+            self.send_message_buf(&mut buf, BgpMessageType::Open, sz)
+                .await?;
+            let msg = match self.recv_message_head().await {
+                Err(e) => {
+                    return Err(e);
+                }
+                Ok(msg) => msg,
+            };
+            match msg.0 {
+                BgpMessageType::Open => {
+                    self.read_socket(&mut buf[0..msg.1]).await?;
+                    let mut bomrcv = self.params.open_message();
+                    bomrcv.decode_from(&self.params, &buf[0..msg.1])?;
+                    let remsess =
+                        BgpPeerDesc::new(self.peersock.peer_addr().unwrap().ip(), bomrcv.clone());
+                    self.params.hold_time = bomrcv.hold_time;
+                    self.params.match_caps(&bomrcv.caps);
+                    self.sessionid = self
+                        .update_handler
+                        .register_session(Arc::new(BgpSessionDesc::new(mysess, remsess)))
+                        .await;
+                    return Ok(());
+                }
+                BgpMessageType::Notification => {
+                    self.read_socket(&mut buf[0..msg.1]).await?;
+                    let mut bnrcv = BgpNotificationMessage::new();
+                    bnrcv.decode_from(&self.params, &buf[0..msg.1])?;
+                    warn!("Notification: {}", bnrcv.error_text());
+                    if bnrcv.error_code == 2 && bnrcv.error_subcode == 7 {
+                        //unsupported capability
+                        let (cap, _) = BgpCapability::from_buffer(&buf[2..msg.1])?;
+                        info!("Unsupported capability: {:?} in {:?}", cap, self.params);
+                        self.params.remove_capability(&cap);
+                        /*
+                        match cap {
+                          BgpCapability::CapAddPath(_) => self.params.remove_capability_addpath(),
+                          _ => self.params.remove_capability(&cap)
+                        }
+                        */
+                        info!("Removed capability: {:?} in {:?}", cap, self.params);
+                        continue;
+                    }
+                    return Err(BgpError::from_string(format!(
+                        "Notification received: {}",
+                        bnrcv.error_text()
+                    )));
+                }
+                _ => {
+                    return Err(BgpError::from_string(format!(
+                        "Invalid message type received: {:?}",
+                        msg.0
+                    )));
+                }
             }
-            Ok(sz) => sz,
-        };
-        let mysess = BgpPeerDesc::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), bom.clone());
-        self.send_message_buf(&mut buf, BgpMessageType::Open, sz)
-            .await?;
-        let msg = match self.recv_message_head().await {
-            Err(e) => {
-                return Err(e);
-            }
-            Ok(msg) => msg,
-        };
-        if msg.0 != BgpMessageType::Open {
-            return Err(BgpError::static_str("Invalid state to start_active"));
         }
-        self.read_socket(&mut buf[0..msg.1]).await?;
-        let mut bomrcv = self.params.open_message();
-        bomrcv.decode_from(&self.params, &buf[0..msg.1])?;
-        let remsess = BgpPeerDesc::new(self.peersock.peer_addr().unwrap().ip(), bomrcv.clone());
-        self.params.hold_time = bomrcv.hold_time;
-        self.params.match_caps(&bomrcv.caps);
-        self.sessionid = self
-            .update_handler
-            .register_session(Arc::new(BgpSessionDesc::new(mysess, remsess)))
-            .await;
-        Ok(())
     }
     pub async fn send_keepalive(&mut self) -> Result<(), BgpError> {
         let mut buf = [255 as u8; 19];
@@ -154,7 +190,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                 match self.send_keepalive().await {
                     Ok(_) => {}
                     Err(e) => {
-                        eprintln!("Keepalive send error: {:?}", e);
+                        error!("Keepalive send error: {:?}", e);
                     }
                 }
                 tosleep = Local::now() - self.keepalive_sent;
@@ -175,7 +211,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                 msgin = self.recv_message_head() => {
                     match msgin {
                         Err(e) => {
-                            eprintln!("recv_message_head: {:?}", e);
+                            error!("recv_message_head: {:?}", e);
                             break;
                         }
                         Ok(msg) => msg
@@ -183,27 +219,27 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                 }
             };
             if let Err(e) = self.read_socket(&mut buf[0..msg.1]).await {
-                eprintln!("recv_message: {:?}", e);
+                warn!("recv_message: {:?}", e);
             };
             match msg.0 {
                 BgpMessageType::Open => {
-                    eprintln!("Incorrect open message!");
+                    error!("Incorrect open message!");
                     break;
                 }
                 BgpMessageType::Keepalive => match self.send_keepalive().await {
                     Ok(_) => {}
                     Err(e) => {
-                        eprintln!("Keepalive sending error: {:?}", e);
+                        warn!("Keepalive sending error: {:?}", e);
                     }
                 },
                 BgpMessageType::Notification => {
                     let mut msgnotification = BgpNotificationMessage::new();
                     match msgnotification.decode_from(&self.params, &buf[0..msg.1]) {
                         Err(e) => {
-                            eprintln!("BGP notification decode error: {:?}", e);
+                            warn!("BGP notification decode error: {:?}", e);
                         }
                         Ok(_) => {
-                            println!(
+                            info!(
                                 "BGP notification: {:?} - {:?}",
                                 msgnotification,
                                 msgnotification.error_text()
@@ -215,7 +251,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                 BgpMessageType::Update => {
                     let mut msgupdate = BgpUpdateMessage::new();
                     if let Err(e) = msgupdate.decode_from(&self.params, &buf[0..msg.1]) {
-                        eprintln!("BGP update decode error: {:?}", e);
+                        error!("BGP update decode error: {:?}", e);
                         continue;
                     }
                     self.update_handler
@@ -229,7 +265,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
         match self.peersock.shutdown().await {
             Ok(_) => {}
             Err(e) => {
-                println!("Warning: socket shutdown error: {}", e)
+                error!("Warning: socket shutdown error: {}", e)
             }
         }
     }
