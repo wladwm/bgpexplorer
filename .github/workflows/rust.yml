@@ -19,7 +19,7 @@ jobs:
         with:
           command: build
           args: --verbose
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.ACCESS_TOKEN }}
 
   code_style:
     continue-on-error: true
@@ -30,9 +30,9 @@ jobs:
       - uses: fibiol/cargo-actions@v1
         with:
           command: fmt
-          toolchain: nightly
+          toolchain: stable
           args: --all -- --check
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.ACCESS_TOKEN }}
 
   lint:
     continue-on-error: true
