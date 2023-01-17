@@ -21,10 +21,10 @@ pub struct RibResponseParams {
 impl RibResponseParams {
     pub fn new(skip: usize, limit: usize, maxdepth: usize, onlyactive: bool) -> RibResponseParams {
         RibResponseParams {
-            skip: skip,
-            limit: limit,
-            maxdepth: maxdepth,
-            onlyactive: onlyactive,
+            skip,
+            limit,
+            maxdepth,
+            onlyactive,
         }
     }
     pub fn extract_params(&mut self, hashmap: &HashMap<String, String>) {

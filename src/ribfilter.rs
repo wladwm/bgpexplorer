@@ -32,7 +32,7 @@ impl<T> std::iter::Iterator for SortIter<T> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum FilterItemMatchResult {
     Unknown,
     No,
@@ -108,7 +108,7 @@ impl From<bool> for FilterItemMatchResult {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum FilterASPath {
     Empty,
     Contains(BgpASpath),
@@ -143,7 +143,7 @@ impl PartialEq for FilterRegex {
         self.restr == other.restr
     }
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum FilterExtComm {
     Num(u32),
     PairNum((u32, u32)),
@@ -151,7 +151,7 @@ pub enum FilterExtComm {
     PairNumIP((BgpAddrV4, u32)),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum FilterItemKind {
     Attr,
     Net,
@@ -248,10 +248,10 @@ impl FilterMatchRoute for std::net::IpAddr {
 
 impl FilterMatchRoute for BgpAddrV4 {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        fi.match_ipv4(&self)
+        fi.match_ipv4(self)
     }
     fn match_super_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        fi.match_super_ipv4(&self)
+        fi.match_super_ipv4(self)
     }
     fn len(&self) -> usize {
         self.prefixlen as usize
@@ -276,10 +276,10 @@ impl FilterMatchRoute for BgpAddrV4 {
 }
 impl FilterMatchRoute for BgpAddrV6 {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        fi.match_ipv6(&self)
+        fi.match_ipv6(self)
     }
     fn match_super_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        fi.match_super_ipv6(&self)
+        fi.match_super_ipv6(self)
     }
     fn len(&self) -> usize {
         self.prefixlen as usize
@@ -319,7 +319,7 @@ impl FilterMatchRoute for BgpAddrL2 {
 impl FilterMatchRoute for BgpMVPN1 {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
         match fi.match_rd(&self.rd) {
-            FilterItemMatchResult::Unknown => self.originator.match_item(&fi),
+            FilterItemMatchResult::Unknown => self.originator.match_item(fi),
             n => n,
         }
     }
@@ -335,9 +335,9 @@ impl FilterMatchRoute for BgpMVPN3 {
             FilterItemMatchResult::Unknown => {}
             n => return n,
         };
-        let m1 = self.originator.match_item(&fi);
-        let m2 = self.source.match_item(&fi);
-        let m3 = self.group.match_item(&fi);
+        let m1 = self.originator.match_item(fi);
+        let m2 = self.source.match_item(fi);
+        let m3 = self.group.match_item(fi);
         FilterItemMatchResult::multi(&[m1, m2, m3])
     }
 }
@@ -347,7 +347,7 @@ impl FilterMatchRoute for BgpMVPN4 {
             FilterItemMatchResult::Unknown => {}
             n => return n,
         };
-        self.originator.match_item(&fi)
+        self.originator.match_item(fi)
     }
 }
 impl FilterMatchRoute for BgpMVPN5 {
@@ -356,8 +356,8 @@ impl FilterMatchRoute for BgpMVPN5 {
             FilterItemMatchResult::Unknown => {}
             n => return n,
         };
-        let m1 = self.source.match_item(&fi);
-        let m2 = self.group.match_item(&fi);
+        let m1 = self.source.match_item(fi);
+        let m2 = self.group.match_item(fi);
         FilterItemMatchResult::multi(&[m1, m2])
     }
 }
@@ -367,8 +367,8 @@ impl FilterMatchRoute for BgpMVPN67 {
             FilterItemMatchResult::Unknown => {}
             n => return n,
         };
-        let m1 = self.rp.match_item(&fi);
-        let m2 = self.group.match_item(&fi);
+        let m1 = self.rp.match_item(fi);
+        let m2 = self.group.match_item(fi);
         FilterItemMatchResult::multi(&[m1, m2])
     }
 }
@@ -397,7 +397,7 @@ impl FilterMatchRoute for BgpEVPN2 {
             n => return n,
         };
         if let Some(ip) = self.ip {
-            return ip.match_item(&fi);
+            return ip.match_item(fi);
         }
         FilterItemMatchResult::Unknown
     }
@@ -408,7 +408,7 @@ impl FilterMatchRoute for BgpEVPN3 {
             FilterItemMatchResult::Unknown => {}
             n => return n,
         };
-        self.ip.match_item(&fi)
+        self.ip.match_item(fi)
     }
 }
 impl FilterMatchRoute for BgpEVPN4 {
@@ -417,7 +417,7 @@ impl FilterMatchRoute for BgpEVPN4 {
             FilterItemMatchResult::Unknown => {}
             n => return n,
         };
-        self.ip.match_item(&fi)
+        self.ip.match_item(fi)
     }
 }
 impl FilterMatchRoute for BgpEVPN {
@@ -432,12 +432,12 @@ impl FilterMatchRoute for BgpEVPN {
 }
 impl FilterMatchRoute for BgpMdtV4 {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        FilterItemMatchResult::multi(&[self.addr.match_item(&fi), fi.match_addr_v4(&self.group)])
+        FilterItemMatchResult::multi(&[self.addr.match_item(fi), fi.match_addr_v4(&self.group)])
     }
 }
 impl FilterMatchRoute for BgpMdtV6 {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        FilterItemMatchResult::multi(&[self.addr.match_item(&fi), fi.match_addr_v6(&self.group)])
+        FilterItemMatchResult::multi(&[self.addr.match_item(fi), fi.match_addr_v6(&self.group)])
     }
 }
 impl FilterMatchRoute for BgpFlowSpec<BgpAddrV4> {}
@@ -445,13 +445,13 @@ impl<T: BgpItem<T> + FilterMatchRoute + Clone> FilterMatchRoute for WithRd<T> {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
         //eprintln!("WithRd::match_item {:?} - {}", fi, self);
         match fi.match_rd(&self.rd) {
-            FilterItemMatchResult::Unknown => self.prefix.match_item(&fi),
+            FilterItemMatchResult::Unknown => self.prefix.match_item(fi),
             n => n,
         }
     }
     fn match_super_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
         match fi.match_rd(&self.rd) {
-            FilterItemMatchResult::Unknown => self.prefix.match_super_item(&fi),
+            FilterItemMatchResult::Unknown => self.prefix.match_super_item(fi),
             n => n,
         }
     }
@@ -459,49 +459,35 @@ impl<T: BgpItem<T> + FilterMatchRoute + Clone> FilterMatchRoute for WithRd<T> {
         64 + self.prefix.len()
     }
     fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
-        match T::get_subnet_range(fi) {
-            None => None,
-            Some(r) => Some(
-                Self::new(BgpRD::new(0, 0), (*(r.start())).clone())
-                    ..=Self::new(BgpRD::new(0xffffffff, 0xffffffff), (*(r.end())).clone()),
-            ),
-        }
+        T::get_subnet_range(fi).map(|r| {
+            Self::new(BgpRD::new(0, 0), (*(r.start())).clone())
+                ..=Self::new(BgpRD::new(0xffffffff, 0xffffffff), (*(r.end())).clone())
+        })
     }
     fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
-        match T::get_supernet_range(fi) {
-            None => None,
-            Some(r) => Some(
-                Self::new(BgpRD::new(0, 0), (*(r.start())).clone())
-                    ..=Self::new(BgpRD::new(0xffffffff, 0xffffffff), (*(r.end())).clone()),
-            ),
-        }
+        T::get_supernet_range(fi).map(|r| {
+            Self::new(BgpRD::new(0, 0), (*(r.start())).clone())
+                ..=Self::new(BgpRD::new(0xffffffff, 0xffffffff), (*(r.end())).clone())
+        })
     }
 }
 impl<T: BgpItem<T> + FilterMatchRoute + Clone> FilterMatchRoute for Labeled<T> {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        self.prefix.match_item(&fi)
+        self.prefix.match_item(fi)
     }
     fn match_super_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        self.prefix.match_super_item(&fi)
+        self.prefix.match_super_item(fi)
     }
     fn len(&self) -> usize {
         self.labels.labels.len() * 24 + self.prefix.len()
     }
     fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
-        match T::get_subnet_range(fi) {
-            None => None,
-            Some(r) => {
-                Some(Self::new_nl((*(r.start())).clone())..=Self::new_nl((*(r.end())).clone()))
-            }
-        }
+        T::get_subnet_range(fi)
+            .map(|r| Self::new_nl((*(r.start())).clone())..=Self::new_nl((*(r.end())).clone()))
     }
     fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
-        match T::get_supernet_range(fi) {
-            None => None,
-            Some(r) => {
-                Some(Self::new_nl((*(r.start())).clone())..=Self::new_nl((*(r.end())).clone()))
-            }
-        }
+        T::get_supernet_range(fi)
+            .map(|r| Self::new_nl((*(r.start())).clone())..=Self::new_nl((*(r.end())).clone()))
     }
 }
 impl FilterMatchRoute for BgpExtCommunity {
@@ -596,40 +582,29 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
             match self.srcitr.next() {
                 None => break,
                 Some(q) => {
-                    if q.1
-                        .items
-                        .iter()
-                        .find(|ssitr| {
-                            ssitr
-                                .1
+                    if q.1.items.iter().any(|ssitr| {
+                        ssitr.1.items.iter().any(|pitr| {
+                            pitr.1
                                 .items
                                 .iter()
-                                .find(|pitr| {
-                                    pitr.1
-                                        .items
-                                        .iter()
-                                        .filter(|hr| {
-                                            if self.filter.onlyactive {
-                                                hr.1.active
-                                            } else {
-                                                true
-                                            }
-                                        })
-                                        .skip(if pitr.1.items.len() > self.filter.maxdepth {
-                                            pitr.1.items.len() - self.filter.maxdepth
-                                        } else {
-                                            0
-                                        })
-                                        .find(|histitem| {
-                                            self.filter.filter.match_route(q.0, &histitem.1.attrs)
-                                                == FilterItemMatchResult::Yes
-                                        })
-                                        .is_some()
+                                .filter(|hr| {
+                                    if self.filter.onlyactive {
+                                        hr.1.active
+                                    } else {
+                                        true
+                                    }
                                 })
-                                .is_some()
+                                .skip(if pitr.1.items.len() > self.filter.maxdepth {
+                                    pitr.1.items.len() - self.filter.maxdepth
+                                } else {
+                                    0
+                                })
+                                .any(|histitem| {
+                                    self.filter.filter.match_route(q.0, &histitem.1.attrs)
+                                        == FilterItemMatchResult::Yes
+                                })
                         })
-                        .is_some()
-                    {
+                    }) {
                         return Some(q);
                     }
                 }
@@ -673,42 +648,29 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
             match self.srcitr.next() {
                 None => break,
                 Some(q) => {
-                    if q.1
-                        .items
-                        .iter()
-                        .find(|ssitr| {
-                            ssitr
-                                .1
+                    if q.1.items.iter().any(|ssitr| {
+                        ssitr.1.items.iter().any(|pitr| {
+                            pitr.1
                                 .items
                                 .iter()
-                                .find(|pitr| {
-                                    pitr.1
-                                        .items
-                                        .iter()
-                                        .filter(|hr| {
-                                            if self.filter.onlyactive {
-                                                hr.1.active
-                                            } else {
-                                                true
-                                            }
-                                        })
-                                        .skip(if pitr.1.items.len() > self.filter.maxdepth {
-                                            pitr.1.items.len() - self.filter.maxdepth
-                                        } else {
-                                            0
-                                        })
-                                        .find(|histitem| {
-                                            self.filter
-                                                .filter
-                                                .match_super_route(q.0, &histitem.1.attrs)
-                                                == FilterItemMatchResult::Yes
-                                        })
-                                        .is_some()
+                                .filter(|hr| {
+                                    if self.filter.onlyactive {
+                                        hr.1.active
+                                    } else {
+                                        true
+                                    }
                                 })
-                                .is_some()
+                                .skip(if pitr.1.items.len() > self.filter.maxdepth {
+                                    pitr.1.items.len() - self.filter.maxdepth
+                                } else {
+                                    0
+                                })
+                                .any(|histitem| {
+                                    self.filter.filter.match_super_route(q.0, &histitem.1.attrs)
+                                        == FilterItemMatchResult::Yes
+                                })
                         })
-                        .is_some()
-                    {
+                    }) {
                         return Some(q);
                     }
                 }
@@ -717,16 +679,19 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
         None
     }
 }
-
+impl Default for RouteFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl RouteFilter {
     pub fn new() -> RouteFilter {
         RouteFilter { terms: Vec::new() }
     }
     pub fn parse(&mut self, st: &str) {
         for s in st.split(' ') {
-            match FilterTerm::parse(s) {
-                Some(t) => self.terms.push(t),
-                None => {}
+            if let Some(t) = FilterTerm::parse(s) {
+                self.terms.push(t)
             }
         }
     }
@@ -741,7 +706,7 @@ impl RouteFilter {
         takemaxdepth: usize,
         takeonlyactive: bool,
     ) -> RouteFilterSubnets<'a, 'a, T> {
-        RouteFilterSubnets::new(&self, takemaxdepth, takeonlyactive, safi)
+        RouteFilterSubnets::new(self, takemaxdepth, takeonlyactive, safi)
     }
     pub fn iter_super_nets<'a, T: FilterMatchRoute + BgpRIBKey>(
         &'a self,
@@ -749,7 +714,7 @@ impl RouteFilter {
         takemaxdepth: usize,
         takeonlyactive: bool,
     ) -> RouteFilterSupernets<'a, 'a, T> {
-        RouteFilterSupernets::new(&self, takemaxdepth, takeonlyactive, safi)
+        RouteFilterSupernets::new(self, takemaxdepth, takeonlyactive, safi)
     }
     pub fn find_best_supernet<'a, T: FilterMatchRoute + BgpRIBKey>(
         &'a self,
@@ -758,7 +723,7 @@ impl RouteFilter {
         takeonlyactive: bool,
     ) -> Option<(&'a T, &'a BgpSessionEntry)> {
         let mut ret: Option<(&'a T, &'a BgpSessionEntry)> = None;
-        for q in RouteFilterSupernets::new(&self, takemaxdepth, takeonlyactive, safi) {
+        for q in RouteFilterSupernets::new(self, takemaxdepth, takeonlyactive, safi) {
             match ret {
                 None => {
                     ret = Some(q);
@@ -770,10 +735,10 @@ impl RouteFilter {
                 }
             }
         }
-        return ret;
+        ret
     }
     pub fn match_attr(&self, attr: &BgpAttrs) -> FilterItemMatchResult {
-        if self.terms.len() < 1 {
+        if self.terms.is_empty() {
             return FilterItemMatchResult::Yes;
         }
         let mut cnt: usize = 0;
@@ -798,7 +763,7 @@ impl RouteFilter {
         route: &T,
         attr: &BgpAttrs,
     ) -> FilterItemMatchResult {
-        if self.terms.len() < 1 {
+        if self.terms.is_empty() {
             return FilterItemMatchResult::Yes;
         }
         let mut result_route = FilterItemMatchResult::Yes;
@@ -833,7 +798,7 @@ impl RouteFilter {
         route: &T,
         attr: &BgpAttrs,
     ) -> FilterItemMatchResult {
-        if self.terms.len() < 1 {
+        if self.terms.is_empty() {
             return FilterItemMatchResult::Yes;
         }
         let mut result_route = FilterItemMatchResult::Yes;
@@ -899,7 +864,7 @@ impl RouteFilter {
         }
         ret
     }
-    pub fn find_aspath_item<'a>(&'a self) -> BTreeSet<BgpAS> {
+    pub fn find_aspath_item(&self) -> BTreeSet<BgpAS> {
         let mut ret: BTreeSet<BgpAS> = BTreeSet::new();
         for i in self.terms.iter() {
             if i.predicate == FilterItemMatchResult::No {
@@ -908,16 +873,16 @@ impl RouteFilter {
             match &i.item {
                 FilterItem::ASPath(asp) => match asp {
                     FilterASPath::Contains(p) => p.value.iter().for_each(|x| {
-                        ret.insert(x.clone());
+                        ret.insert(*x);
                     }),
                     FilterASPath::StartsWith(p) => p.value.iter().for_each(|x| {
-                        ret.insert(x.clone());
+                        ret.insert(*x);
                     }),
                     FilterASPath::EndsWith(p) => p.value.iter().for_each(|x| {
-                        ret.insert(x.clone());
+                        ret.insert(*x);
                     }),
                     FilterASPath::FullMatch(p) => p.value.iter().for_each(|x| {
-                        ret.insert(x.clone());
+                        ret.insert(*x);
                     }),
                     FilterASPath::Empty => {}
                 },

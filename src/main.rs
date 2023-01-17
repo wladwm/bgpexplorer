@@ -136,8 +136,7 @@ impl Svc {
             return Ok(not_found());
         }
         let requri = req.uri().path();
-        if requri.len() > 5 {
-            if requri[..5] == "/api/"[..5] {
+        if requri.len() > 5 &&  requri[..5] == "/api/"[..5] {
                 let urlparts: Vec<&str> = requri.split('/').collect();
                 if urlparts.len() > 2 {
                     match urlparts[2] {
@@ -163,15 +162,12 @@ impl Svc {
                         }
                     }
                 }
-            }
         }
-        let filepath = String::new()
-            + self.httproot.as_str()
+        let filepath = self.httproot.to_string()
             + (match requri {
                 "/" => "/index.html",
                 s => s,
             });
-        //println!("File {}",filepath);
         simple_file_send(filepath.as_str()).await
     }
 }

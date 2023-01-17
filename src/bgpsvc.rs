@@ -8,6 +8,7 @@ use hyper::{Body, Request, Response, StatusCode};
 use serde::ser::{SerializeMap, SerializeStruct};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
 use std::thread::JoinHandle;
 use std::vec::Vec;
@@ -24,16 +25,21 @@ pub trait BgpUpdateHandler {
     async fn handle_update(&self, peerid: BgpSessionId, upd: BgpUpdateMessage);
     async fn register_session(&self, sess: Arc<BgpSessionDesc>) -> BgpSessionId;
 }
-#[derive(Hash, Eq, Ord, Debug, Clone)]
+#[derive(Hash, PartialEq, Eq, Debug, Clone)]
 pub struct BgpPeerDesc {
     pub addr: IpAddr,
     pub bom: BgpOpenMessage,
 }
 impl BgpPeerDesc {
     pub fn new(addr: IpAddr, bom: BgpOpenMessage) -> BgpPeerDesc {
-        BgpPeerDesc {
-            addr: addr,
-            bom: bom,
+        BgpPeerDesc { addr, bom }
+    }
+}
+impl Ord for BgpPeerDesc {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.addr.cmp(&other.addr) {
+            Ordering::Equal => self.bom.cmp(&other.bom),
+            x => x
         }
     }
 }
@@ -49,27 +55,39 @@ impl PartialOrd for BgpPeerDesc {
         }
     }
 }
-impl PartialEq for BgpPeerDesc {
-    fn eq(&self, other: &Self) -> bool {
-        self.addr.eq(&other.addr) && self.bom.as_num == other.bom.as_num
-    }
-}
-#[derive(Hash, Eq, Ord, Debug, Clone)]
+#[derive(Eq, Debug, Clone)]
 pub struct BgpSessionDesc {
     pub peer1: BgpPeerDesc,
     pub peer2: BgpPeerDesc,
 }
 impl BgpSessionDesc {
     pub fn new(peer1: BgpPeerDesc, peer2: BgpPeerDesc) -> BgpSessionDesc {
-        BgpSessionDesc {
-            peer1: peer1,
-            peer2: peer2,
-        }
+        BgpSessionDesc { peer1, peer2 }
     }
     pub fn from_bmppeerup(pu: &BmpMessagePeerUp) -> BgpSessionDesc {
         BgpSessionDesc {
-            peer1: BgpPeerDesc::new(pu.localaddress.clone(), pu.msg1.clone()),
-            peer2: BgpPeerDesc::new(pu.peer.peeraddress.clone(), pu.msg2.clone()),
+            peer1: BgpPeerDesc::new(pu.localaddress, pu.msg1.clone()),
+            peer2: BgpPeerDesc::new(pu.peer.peeraddress, pu.msg2.clone()),
+        }
+    }
+}
+impl Ord for BgpSessionDesc {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let mut sp1 = &self.peer1;
+        let mut sp2 = &self.peer2;
+        if sp2 < sp1 {
+            sp1 = &self.peer2;
+            sp2 = &self.peer1;
+        }
+        let mut op1 = &other.peer1;
+        let mut op2 = &other.peer2;
+        if op2 < op1 {
+            op1 = &other.peer2;
+            op2 = &other.peer1;
+        }
+        match sp1.cmp(op1) {
+            Ordering::Equal => sp2.cmp(op2),
+            x => x
         }
     }
 }
@@ -103,6 +121,17 @@ impl PartialEq for BgpSessionDesc {
             || (self.peer1.eq(&other.peer2) && self.peer2.eq(&other.peer1))
     }
 }
+impl Hash for BgpSessionDesc {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        if self.peer1 < self.peer2 {
+            self.peer1.hash(state);
+            self.peer2.hash(state);
+        } else {
+            self.peer2.hash(state);
+            self.peer1.hash(state);
+        }
+    }
+}
 struct BgpSessionStorage {
     pub ss_ids: BTreeMap<BgpSessionId, Arc<BgpSessionDesc>>,
     pub ss_addrs: BTreeMap<Arc<BgpSessionDesc>, BgpSessionId>,
@@ -124,7 +153,7 @@ impl BgpSessionStorage {
         }
         let mut nid: BgpSessionId = (self.ss_ids.len() + 1) as BgpSessionId;
         while self.ss_ids.get_key_value(&nid).is_some() {
-            nid = nid + 1;
+            nid += 1;
         }
         self.ss_addrs.insert(sessdsc.clone(), nid);
         self.ss_ids.insert(nid, sessdsc);
@@ -179,7 +208,7 @@ impl BgpSvr {
         self.rib.rib.read().await.events.subscribe()
     }
     pub async fn start_updates(&mut self) {
-        if let Some(_) = self.updater {
+        if self.updater.is_some() {
             return;
         }
         let (tx, rx) = channel(100);
@@ -402,17 +431,17 @@ impl BgpSvr {
             return Ok(not_found());
         }
         match urlparts[2] {
-            "statistics" => return self.rib.say_statistics().await,
-            "sessions" => return self.say_sessions().await,
+            "statistics" => self.rib.say_statistics().await,
+            "sessions" => self.say_sessions().await,
             "json" => {
                 if urlparts.len() < 4 {
-                    return Ok(not_found());
+                    Ok(not_found())
                 } else {
-                    return self.rib.say_jsonrib(urlparts[3], req).await;
+                    self.rib.say_jsonrib(urlparts[3], req).await
                 }
             }
-            _ => return Ok(not_found()),
-        };
+            _ => Ok(not_found()),
+        }
     }
     pub async fn response_fn(&self, req: &Request<Body>) -> Result<Response<Body>, hyper::Error> {
         match self.handle_query(req).await {
@@ -482,7 +511,7 @@ impl<'a, 'b> BPEItems<'a, 'b> {
     }
     pub fn is_empty(&self) -> bool {
         !self.bpe.items.iter().any(|x| {
-            let v = BAHItems::new(&x.1, self.params);
+            let v = BAHItems::new(x.1, self.params);
             !v.is_empty()
         })
     }
@@ -495,7 +524,7 @@ impl<'a, 'b> serde::Serialize for BPEItems<'a, 'b> {
         let mut state = serializer.serialize_map(Some(self.bpe.items.len()))?;
 
         for (k, v) in self.bpe.items.iter() {
-            let v = BAHItems::new(&v, self.params);
+            let v = BAHItems::new(v, self.params);
             if v.is_empty() {
                 continue;
             }
@@ -514,7 +543,7 @@ impl<'a, 'b> BSEItems<'a, 'b> {
     }
     pub fn is_empty(&self) -> bool {
         !self.bse.items.iter().any(|x| {
-            let v = BPEItems::new(&x.1, self.params);
+            let v = BPEItems::new(x.1, self.params);
             !v.is_empty()
         })
     }
@@ -527,7 +556,7 @@ impl<'a, 'b> serde::Serialize for BSEItems<'a, 'b> {
         let mut state = serializer.serialize_map(Some(self.bse.items.len()))?;
 
         for (k, v) in self.bse.items.iter() {
-            let v = BPEItems::new(&v, &self.params);
+            let v = BPEItems::new(v, self.params);
             if v.is_empty() {
                 continue;
             }
@@ -544,7 +573,7 @@ pub struct RibItems<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string
 
 impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> RibItems<'a, T> {
     pub fn count(&self) -> usize {
-        if self.filter.terms.len() < 1 {
+        if self.filter.terms.is_empty() {
             self.ribsafi.items.len()
         } else {
             //self.hashmap.iter().filter(|p|{!(self.filter.match_route(p.0, p.1) != ribfilter::FilterItemMatchResult::Yes)}).count()
@@ -570,7 +599,7 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
             .skip(self.params.skip)
             .take(self.params.limit)
         {
-            let v1 = BSEItems::new(&v, &self.params);
+            let v1 = BSEItems::new(v, &self.params);
             if v1.is_empty() {
                 continue;
             }
@@ -587,19 +616,13 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
                 &|a, b| {
                     let alen = a.0.len();
                     let blen = b.0.len();
-                    if alen > blen {
-                        std::cmp::Ordering::Greater
-                    } else if alen < blen {
-                        std::cmp::Ordering::Less
-                    } else {
-                        std::cmp::Ordering::Equal
-                    }
+                    alen.cmp(&blen)
                 },
             )
             .skip(self.params.skip)
             .take(self.params.limit)
             {
-                let v = BSEItems::new(&v, &self.params);
+                let v = BSEItems::new(v, &self.params);
                 if v.is_empty() {
                     continue;
                 }
@@ -619,7 +642,7 @@ pub struct RibResponse<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::str
 impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> RibResponse<'a, T> {
     pub fn new(
         rib: &'a BgpRIBSafi<T>,
-        flt: &'a ribfilter::RouteFilter,
+        filter: &'a ribfilter::RouteFilter,
         params: RibResponseParams,
     ) -> RibResponse<'a, T> {
         RibResponse::<'a, T> {
@@ -628,8 +651,8 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> Rib
             params: params.clone(),
             items: RibItems::<'a, T> {
                 ribsafi: rib,
-                filter: flt,
-                params: params,
+                filter,
+                params,
             },
         }
     }

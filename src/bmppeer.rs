@@ -21,7 +21,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
     ) -> BmpPeer<'a, H> {
         BmpPeer {
             peersock: sock,
-            peer: peer,
+            peer,
             sess: Default::default(),
             sessids: BTreeMap::new(),
             update_handler: handler,
@@ -41,10 +41,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                     .update_handler
                     .register_session(Arc::new(BgpSessionDesc::from_bmppeerup(&pu)))
                     .await;
-                info!(
-                    "Register session id {} for peer {:?}",
-                    sessid, pu
-                );
+                info!("Register session id {} for peer {:?}", sessid, pu);
                 self.sessids.insert(BgpSessionKey::from(&pu.peer), sessid);
             }
             BmpMessage::RouteMonitoring(rm) => {
@@ -52,11 +49,11 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                     None => {
                         if let Some(ref filter_rd) = self.peer.flt_rd {
                             if rm.peer.peerdistinguisher == *filter_rd {
-                                warn!("Skip update: {:?}",rm);
+                                warn!("Skip update: {:?}", rm);
                             };
                         };
-                        return Ok(())
-                    },
+                        return Ok(());
+                    }
                     Some(x) => *x,
                 };
                 self.update_handler.handle_update(sessid, rm.update).await;
@@ -66,7 +63,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
         Ok(())
     }
     pub async fn lifecycle(&mut self, cancel: tokio_util::sync::CancellationToken) {
-        let mut buf = Box::new([0 as u8; 65536]);
+        let mut buf = Box::new([0u8; 65536]);
         loop {
             select! {
               _ = cancel.cancelled() => {
@@ -92,14 +89,10 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                   break;
               }
               r = self.peersock.read_exact(&mut buf[1..5]) => {
-                  match r {
-                      Err(e) => {
-                          error!("BMP reading error: {:?}",e);
-                          break;
-                      }
-                      Ok(_) => {
-                      }
-                  }
+                if let Err(e) = r {
+                    error!("BMP reading error: {:?}",e);
+                    break;
+                }
               }
             };
             let bmph = match BmpMessageHeader::decode_from(buf.as_ref()) {
@@ -117,13 +110,9 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                     break;
                 }
                 r = self.peersock.read_exact(&mut buf[0..(bmph.0.msglength-5)]) => {
-                    match r {
-                        Err(e) => {
-                            error!("BMP reading error: {:?}",e);
-                            break;
-                        }
-                        Ok(_) => {
-                        }
+                    if let Err(e) = r {
+                        error!("BMP reading error: {:?}",e);
+                        break;
                     }
                 }
             };
@@ -141,11 +130,8 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
         }
     }
     pub async fn close(&mut self) {
-        match self.peersock.shutdown().await {
-            Ok(_) => {}
-            Err(e) => {
-                warn!("socket shutdown error: {}", e)
-            }
+        if let Err(e) = self.peersock.shutdown().await {
+            warn!("socket shutdown error: {}", e)
         }
     }
 }

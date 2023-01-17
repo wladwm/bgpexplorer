@@ -11,14 +11,14 @@ use whois_rust::{WhoIs, WhoIsError, WhoIsLookupOptions, WhoIsServerValue};
 #[derive(Debug)]
 enum WhoisKey {
     ExtWhois(String),
-    DNS(String),
+    Dns(String),
 }
 impl WhoisKey {
     fn whois_query(s: String) -> WhoisKey {
         WhoisKey::ExtWhois(s)
     }
     fn dns_query(s: String) -> WhoisKey {
-        WhoisKey::DNS(s)
+        WhoisKey::Dns(s)
     }
 }
 impl serde::Serialize for WhoisKey {
@@ -31,7 +31,7 @@ impl serde::Serialize for WhoisKey {
             WhoisKey::ExtWhois(s) => {
                 state.serialize_field("whois", s)?;
             }
-            WhoisKey::DNS(s) => {
+            WhoisKey::Dns(s) => {
                 state.serialize_field("dns", s)?;
             }
         }
@@ -58,7 +58,10 @@ impl WhoisRec {
     fn mkfrom(gts: i64, vl: String) -> WhoisRec {
         lazy_static! {
             static ref GMT_OFFSET: FixedOffset = chrono::FixedOffset::east_opt(0).unwrap();
-            static ref DEF_NDT: NaiveDateTime = NaiveDateTime::new(NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),NaiveTime::from_hms_milli_opt(12, 0, 0, 0).unwrap());
+            static ref DEF_NDT: NaiveDateTime = NaiveDateTime::new(
+                NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
+                NaiveTime::from_hms_milli_opt(12, 0, 0, 0).unwrap()
+            );
         };
         WhoisRec {
             ts: DateTime::<Local>::from_utc(
@@ -96,6 +99,8 @@ impl<'de> Deserialize<'de> for WhoisRec {
     where
         D: Deserializer<'de>,
     {
+        const FIELDS: &[&str] = &["ts", "val"];
+
         enum Field {
             Ts,
             Val,
@@ -185,8 +190,6 @@ impl<'de> Deserialize<'de> for WhoisRec {
                 Ok(WhoisRec::mkfrom(ts, val))
             }
         }
-
-        const FIELDS: &'static [&'static str] = &["ts", "val"];
         deserializer.deserialize_struct("WR", FIELDS, WhoisRecVisitor)
     }
 }
@@ -233,20 +236,17 @@ impl WhoisSvr {
     pub async fn bindany() -> Result<tokio::net::UdpSocket, WhoIsError> {
         let mut bindport: u16 = 10000;
         for _i in 0..19 {
-            match tokio::net::UdpSocket::bind(std::net::SocketAddr::new(
+            if let Ok(s) = tokio::net::UdpSocket::bind(std::net::SocketAddr::new(
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)),
                 bindport,
             ))
             .await
             {
-                Ok(s) => {
-                    return Ok(s);
-                }
-                Err(_) => {}
+                return Ok(s);
             };
             bindport += 1;
         }
-        return Err(WhoIsError::MapError("Unable to bind socket"));
+        Err(WhoIsError::MapError("Unable to bind socket"))
     }
     pub async fn do_query_dns_ptr(
         self: &Arc<WhoisSvr>,
@@ -407,13 +407,13 @@ impl WhoisSvr {
             deep -= 1;
             let mut opts = WhoIsLookupOptions::from_string(target.clone())?;
             opts.timeout = Some(self.req_timeout);
-            if whoises.len() > 0 {
+            if !whoises.is_empty() {
                 loop {
                     let whfnd = match whoises.iter().find(|x| *x.1) {
                         None => return Ok(String::from("")),
                         Some(v) => v.0.clone(),
                     };
-                    if whfnd.len() > 0 {
+                    if !whfnd.is_empty() {
                         whoises.insert(whfnd.clone(), false);
                         opts.server = Some(match WhoIsServerValue::from_string(whfnd) {
                             Ok(s) => s,
@@ -437,7 +437,7 @@ impl WhoisSvr {
                 }
                 Some(_) => {
                     let v = Self::findstr(res.as_str(), &checkitem);
-                    if v.len() > 0 {
+                    if !v.is_empty() {
                         self.db.insert(lkey, WhoisRec::new(res.clone())).unwrap();
                         return Ok(res);
                     };
@@ -449,7 +449,7 @@ impl WhoisSvr {
                     whoises.insert(whoissvr.to_string(), true);
                 };
             }
-            if whoises.len() < 1 {
+            if whoises.is_empty() {
                 return Ok(res);
             };
         }
@@ -488,10 +488,10 @@ impl WhoisSvr {
         };
         self.do_query_whois(target, checkitem).await
     }
-    fn filterout_comments<'a>(s: &'a str) -> Vec<&'a str> {
+    fn filterout_comments(s: &str) -> Vec<&str> {
         s.split('\n')
             .filter(|q| {
-                if q.len() > 0 {
+                if !q.is_empty() {
                     if let Some(fc) = q.chars().next() {
                         return fc != '%';
                     }
@@ -506,7 +506,7 @@ impl WhoisSvr {
             Some(fnd) => s
                 .split('\n')
                 .filter(|q| {
-                    if q.len() > 0 {
+                    if !q.is_empty() {
                         if let Some(fc) = q.chars().next() {
                             return fc != '%' && fc != '#';
                         }
@@ -551,7 +551,7 @@ impl WhoisSvr {
                 return Ok(WhoisSvr::invalid_query());
             }
         };
-        if query.len() < 1 {
+        if query.is_empty() {
             return Ok(WhoisSvr::invalid_query());
         };
         let checkstr = Arc::new(if urlparts.len() >= 4 {
@@ -578,8 +578,8 @@ impl WhoisSvr {
                 "raw" => {}
                 _ => {
                     rsp = {
-                        let v = Self::findstr(rsp.as_str(), &*checkstr);
-                        if v.len() > 0 {
+                        let v = Self::findstr(rsp.as_str(), &checkstr);
+                        if !v.is_empty() {
                             v.join("\n")
                         } else {
                             Self::filterout_comments(rsp.as_str()).join("\n")

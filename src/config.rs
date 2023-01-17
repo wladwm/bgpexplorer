@@ -88,13 +88,11 @@ impl ProtoPeer {
                     Ok(a) => Some(a),
                 },
             }
+        } else if peermode == PeerMode::BgpActive || peermode == PeerMode::BmpActive {
+            // fatal error
+            return Err(ErrorConfig::from_str("peer was not specified"));
         } else {
-            if peermode == PeerMode::BgpActive || peermode == PeerMode::BmpActive {
-                // fatal error
-                return Err(ErrorConfig::from_str("peer was not specified"));
-            } else {
-                None
-            }
+            None
         };
         let protolisten: Option<SocketAddr> = if svcsection.contains_key("protolisten") {
             match svcsection["protolisten"] {
@@ -123,19 +121,17 @@ impl ProtoPeer {
                     Ok(a) => Some(a),
                 },
             }
+        } else if peermode == PeerMode::BgpPassive || peermode == PeerMode::BmpPassive {
+            Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+                if peermode == PeerMode::BmpPassive {
+                    632
+                } else {
+                    179
+                },
+            ))
         } else {
-            if peermode == PeerMode::BgpPassive || peermode == PeerMode::BmpPassive {
-                Some(SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-                    if peermode == PeerMode::BmpPassive {
-                        632
-                    } else {
-                        179
-                    },
-                ))
-            } else {
-                None
-            }
+            None
         };
         let routerid: Ipv4Addr = if svcsection.contains_key("routerid") {
             match svcsection["routerid"] {
@@ -190,12 +186,12 @@ impl ProtoPeer {
             Some(zettabgp::afi::BgpRD::new(0, 0))
         };
         Ok(ProtoPeer {
-            routerid: routerid,
+            routerid,
             mode: peermode,
-            peer: peer,
-            protolisten: protolisten,
-            bgppeeras: bgppeeras,
-            flt_rd: flt_rd,
+            peer,
+            protolisten,
+            bgppeeras,
+            flt_rd,
             bgpsessionparams: Arc::new(std::sync::Mutex::new(None)),
         })
     }
@@ -356,9 +352,9 @@ impl SvcConfig {
                 }
                 Ok(p) => Some(p),
             })
-            .map(|x| Arc::new(x))
+            .map(Arc::new)
             .collect();
-        if peers.len() < 1 {
+        if peers.is_empty() {
             return Err(ErrorConfig::from_str("No valid peers or listens specified"));
         }
         let httplisten: std::net::SocketAddr = match (if mainsection.contains_key("httplisten") {
@@ -545,19 +541,19 @@ impl SvcConfig {
             dnses.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53));
         };
         Ok(SvcConfig {
-            httplisten: httplisten,
-            httptimeout: httptimeout,
-            httproot: httproot,
-            historydepth: historydepth,
-            historymode: historymode,
+            httplisten,
+            httptimeout,
+            httproot,
+            historydepth,
+            historymode,
             whoisconfig: whois,
-            whoisdb: whoisdb,
+            whoisdb,
             whoisdnses: dnses,
-            whoisreqtimeout: whoisreqtimeout,
-            whoiscachesecs: whoiscachesecs,
-            purge_after_withdraws: purge_after_withdraws,
-            purge_every: purge_every,
-            peers: peers,
+            whoisreqtimeout,
+            whoiscachesecs,
+            purge_after_withdraws,
+            purge_every,
+            peers,
             snapshot_file,
             snapshot_every,
         })

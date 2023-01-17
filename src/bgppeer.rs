@@ -48,11 +48,11 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
         }
     }
     async fn recv_message_head(&mut self) -> Result<(BgpMessageType, usize), BgpError> {
-        let mut buf = [0 as u8; 19];
+        let mut buf = [0u8; 19];
         self.read_socket(&mut buf).await?;
         self.params.decode_message_head(&buf)
     }
-    fn get_message_body_ref<'b>(buf: &'b mut [u8]) -> Result<&'b mut [u8], BgpError> {
+    fn get_message_body_ref(buf: &mut [u8]) -> Result<&mut [u8], BgpError> {
         if buf.len() < 19 {
             return Err(BgpError::insufficient_buffer_size());
         }
@@ -71,7 +71,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
     }
     pub async fn start_passive(&mut self) -> Result<(), BgpError> {
         let mut bom = BgpOpenMessage::new();
-        let mut buf = [255 as u8; 255];
+        let mut buf = [255u8; 255];
         let msg = match self.recv_message_head().await {
             Err(e) => return Err(e),
             Ok(msg) => msg,
@@ -103,7 +103,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
         info!("start_active");
         loop {
             let bom = self.params.open_message();
-            let mut buf = [255 as u8; 255];
+            let mut buf = [255u8; 255];
             let sz =
                 match bom.encode_to(&self.params, BgpPeer::<H>::get_message_body_ref(&mut buf)?) {
                     Err(e) => {
@@ -143,16 +143,11 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                     if bnrcv.error_code == 2 && bnrcv.error_subcode == 7 {
                         //unsupported capability
                         let (cap, _) = BgpCapability::from_buffer(&buf[2..msg.1])?;
-                        info!("Unsupported capability: {:?} in {:?}", cap, self.params);
-                        self.params.remove_capability(&cap);
-                        /*
-                        match cap {
-                          BgpCapability::CapAddPath(_) => self.params.remove_capability_addpath(),
-                          _ => self.params.remove_capability(&cap)
+                        if let Ok(cap) = cap {
+                            warn!("Unsupported capability: {:?} in {:?}", cap, self.params);
+                            self.params.remove_capability(&cap);
+                            continue;
                         }
-                        */
-                        info!("Removed capability: {:?} in {:?}", cap, self.params);
-                        continue;
                     }
                     return Err(BgpError::from_string(format!(
                         "Notification received: {}",
@@ -169,7 +164,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
         }
     }
     pub async fn send_keepalive(&mut self) -> Result<(), BgpError> {
-        let mut buf = [255 as u8; 19];
+        let mut buf = [255u8; 19];
         let blen = self
             .params
             .prepare_message_buf(&mut buf, BgpMessageType::Keepalive, 0)?;
@@ -182,7 +177,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
         }
     }
     pub async fn lifecycle(&mut self, cancel: tokio_util::sync::CancellationToken) {
-        let mut buf = [255 as u8; 4096];
+        let mut buf = [255u8; 4096];
         let keep_interval = chrono::Duration::seconds((self.params.hold_time / 3) as i64);
         loop {
             let mut tosleep = Local::now() - self.keepalive_sent;

@@ -1,6 +1,6 @@
 [package]
 name = "bgpexplorer"
-version = "0.3.2"
+version = "0.3.3"
 authors = ["Vladimir Melnikov <wlad.w.m@gmail.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
@@ -13,7 +13,7 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-zettabgp = { version = "0.3.2", features = ["serde"] }
+zettabgp = { version = "0.3.3", features = ["serde"] }
 tokio = { version = "1.24.1", features = ["full"] }
 tokio-util = { version = "0.7.4", features = ["full"] }
 hyper = { version = "0.14.23", features = ["full"] }

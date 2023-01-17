@@ -1,3 +1,8 @@
+### 0.3.3 (2022-01-17)
+
+#### Features
+* zettabgp 0.3.3 with log crate and improvements for BMP
+
 ### 0.3.2 (2022-01-17)
 
 #### Fixes

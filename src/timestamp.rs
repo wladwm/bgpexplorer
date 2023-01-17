@@ -1,7 +1,7 @@
 use chrono::prelude::*;
 use chrono::{Local, LocalResult, TimeZone};
 
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Timestamp(DateTime<Local>);
 impl Timestamp {
     pub fn now() -> Self {
@@ -19,6 +19,11 @@ impl std::fmt::Display for Timestamp {
 impl std::convert::From<DateTime<Local>> for Timestamp {
     fn from(t: DateTime<Local>) -> Self {
         Timestamp(t)
+    }
+}
+impl std::convert::Into<DateTime<Local>> for Timestamp {
+    fn into(self) -> DateTime<Local> {
+        self.0
     }
 }
 impl std::ops::Deref for Timestamp {

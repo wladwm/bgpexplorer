@@ -48,7 +48,7 @@ enum BgpAttrsField {
     Clusterlist,
     PmsiTa,
 }
-const BA_VARS: [&'static str; 13] = [
+const BA_VARS: [&str; 13] = [
     "Origin",
     "Nexthop",
     "Aspath",
@@ -333,6 +333,11 @@ impl<'de> serde::de::Deserialize<'de> for BgpAttrs {
         deserializer.deserialize_struct("BgpAttrs", &BA_VARS, BgpAttrsVisitor)
     }
 }
+impl Default for BgpAttrs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl BgpAttrs {
     pub fn new() -> BgpAttrs {
         BgpAttrs {
@@ -384,7 +389,7 @@ enum BgpAttrEntryField {
     Attrs,
     Labels,
 }
-const BAE_VARS: [&'static str; 3] = ["Active", "Attrs", "Labels"];
+const BAE_VARS: [&str; 3] = ["Active", "Attrs", "Labels"];
 impl<'de> serde::de::Deserialize<'de> for BgpAttrEntryField {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
