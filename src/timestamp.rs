@@ -1,5 +1,5 @@
 use chrono::prelude::*;
-use chrono::{Local, TimeZone, LocalResult};
+use chrono::{Local, LocalResult, TimeZone};
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Timestamp(DateTime<Local>);
@@ -7,10 +7,13 @@ impl Timestamp {
     pub fn now() -> Self {
         Timestamp(Local::now())
     }
+    pub fn timestamp_millis(&self) -> i64 {
+        self.0.timestamp_millis()
+    }
 }
 impl std::fmt::Display for Timestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0,)
+        self.0.fmt(f)
     }
 }
 impl std::convert::From<DateTime<Local>> for Timestamp {
@@ -29,7 +32,7 @@ impl serde::Serialize for Timestamp {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_i64(self.0.timestamp_millis())
+        serializer.serialize_i64(self.timestamp_millis())
     }
 }
 impl<'de> serde::de::Deserialize<'de> for Timestamp {
@@ -37,10 +40,12 @@ impl<'de> serde::de::Deserialize<'de> for Timestamp {
     where
         D: serde::de::Deserializer<'de>,
     {
-        Ok(Timestamp(match Local.timestamp_millis_opt(i64::deserialize(deserializer)?) {
-            LocalResult::Single(dt) => dt,
-            LocalResult::Ambiguous(t1, _) => t1,
-            LocalResult::None => Local::now()
-        }))
+        Ok(Timestamp(
+            match Local.timestamp_millis_opt(i64::deserialize(deserializer)?) {
+                LocalResult::Single(dt) => dt,
+                LocalResult::Ambiguous(t1, _) => t1,
+                LocalResult::None => Local::now(),
+            },
+        ))
     }
 }

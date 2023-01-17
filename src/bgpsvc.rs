@@ -467,7 +467,7 @@ impl<'a, 'b> serde::Serialize for BAHItems<'a, 'b> {
                 self.bah.items.len()
             })
         {
-            state.serialize_entry(&k.to_string(), &v)?;
+            state.serialize_entry(&format!("{}", k.timestamp_millis()), &v)?;
         }
         state.end()
     }

@@ -1,3 +1,8 @@
+### 0.3.2 (2022-01-17)
+
+#### Fixes
+* timestamps in json fixed as ints
+
 ### 0.3.1 (2022-01-17)
 
 #### Features
