@@ -53,7 +53,7 @@ snapshot=snapshot.bgp
 
 [s0]
 mode=bgpactive
-bgppeer=10.0.0.1
+peer=10.0.0.1
 peeras=65535
 EOF
 
