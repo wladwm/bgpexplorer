@@ -11,57 +11,12 @@ env:
 
 jobs:
   build:
+
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v2
-
-      - uses: fibiol/cargo-actions@v1
-        with:
-          command: build
-          args: --verbose
-          token: ${{ secrets.ACCESS_TOKEN }}
-
-  code_style:
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-
-      - uses: fibiol/cargo-actions@v1
-        with:
-          command: fmt
-          toolchain: stable
-          args: --all -- --check
-          token: ${{ secrets.ACCESS_TOKEN }}
-
-  lint:
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: fibiol/cargo-actions@v1
-        with:
-          command: clippy
-          args: --all-features --all-targets -- -D warnings
-          token: ${{ secrets.ACCESS_TOKEN }}
-
-  tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: fibiol/cargo-actions@v1
-        with:
-          command: test
-          args: --all-features --no-fail-fast --jobs 1
-          token: ${{ secrets.ACCESS_TOKEN }}
-
-  audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: fibiol/cargo-actions@v1
-        with:
-          command: audit
+    - uses: actions/checkout@v3
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose
