@@ -1,0 +1,67 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: fibiol/cargo-actions@v1
+        with:
+          command: build
+          args: --verbose
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  code_style:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: fibiol/cargo-actions@v1
+        with:
+          command: fmt
+          toolchain: nightly
+          args: --all -- --check
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  lint:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: fibiol/cargo-actions@v1
+        with:
+          command: clippy
+          args: --all-features --all-targets -- -D warnings
+          token: ${{ secrets.ACCESS_TOKEN }}
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: fibiol/cargo-actions@v1
+        with:
+          command: test
+          args: --all-features --no-fail-fast --jobs 1
+          token: ${{ secrets.ACCESS_TOKEN }}
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: fibiol/cargo-actions@v1
+        with:
+          command: audit
