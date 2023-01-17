@@ -175,6 +175,9 @@ impl BgpSvr {
             updater: None,
         }
     }
+    pub async fn subscribe_bgp(&self) -> tokio::sync::broadcast::Receiver<BgpEvent> {
+        self.rib.rib.read().await.events.subscribe()
+    }
     pub async fn start_updates(&mut self) {
         if let Some(_) = self.updater {
             return;
@@ -421,7 +424,118 @@ impl BgpSvr {
         }
     }
 }
+pub struct BAHItems<'a, 'b> {
+    bah: &'a BgpAttrHistory,
+    params: &'b RibResponseParams,
+}
+impl<'a, 'b> BAHItems<'a, 'b> {
+    pub fn new(bah: &'a BgpAttrHistory, params: &'b RibResponseParams) -> Self {
+        BAHItems { bah, params }
+    }
+    pub fn is_empty(&self) -> bool {
+        !self.bah.items.iter().any(|x| {
+            if self.params.onlyactive {
+                x.1.active
+            } else {
+                true
+            }
+        })
+    }
+}
+impl<'a, 'b> serde::Serialize for BAHItems<'a, 'b> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_map(None)?;
 
+        for (k, v) in self
+            .bah
+            .items
+            .iter()
+            .rev()
+            .filter(|x| {
+                if self.params.onlyactive {
+                    x.1.active
+                } else {
+                    true
+                }
+            })
+            .take(if self.params.maxdepth > 0 {
+                self.params.maxdepth
+            } else {
+                self.bah.items.len()
+            })
+        {
+            state.serialize_entry(&k.to_string(), &v)?;
+        }
+        state.end()
+    }
+}
+pub struct BPEItems<'a, 'b> {
+    bpe: &'a BgpPathEntry,
+    params: &'b RibResponseParams,
+}
+impl<'a, 'b> BPEItems<'a, 'b> {
+    pub fn new(bpe: &'a BgpPathEntry, params: &'b RibResponseParams) -> Self {
+        BPEItems { bpe, params }
+    }
+    pub fn is_empty(&self) -> bool {
+        !self.bpe.items.iter().any(|x| {
+            let v = BAHItems::new(&x.1, self.params);
+            !v.is_empty()
+        })
+    }
+}
+impl<'a, 'b> serde::Serialize for BPEItems<'a, 'b> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_map(Some(self.bpe.items.len()))?;
+
+        for (k, v) in self.bpe.items.iter() {
+            let v = BAHItems::new(&v, self.params);
+            if v.is_empty() {
+                continue;
+            }
+            state.serialize_entry(&k.to_string(), &v)?;
+        }
+        state.end()
+    }
+}
+pub struct BSEItems<'a, 'b> {
+    bse: &'a BgpSessionEntry,
+    params: &'b RibResponseParams,
+}
+impl<'a, 'b> BSEItems<'a, 'b> {
+    pub fn new(bse: &'a BgpSessionEntry, params: &'b RibResponseParams) -> Self {
+        BSEItems { bse, params }
+    }
+    pub fn is_empty(&self) -> bool {
+        !self.bse.items.iter().any(|x| {
+            let v = BPEItems::new(&x.1, self.params);
+            !v.is_empty()
+        })
+    }
+}
+impl<'a, 'b> serde::Serialize for BSEItems<'a, 'b> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_map(Some(self.bse.items.len()))?;
+
+        for (k, v) in self.bse.items.iter() {
+            let v = BPEItems::new(&v, &self.params);
+            if v.is_empty() {
+                continue;
+            }
+            state.serialize_entry(&k.to_string(), &v)?;
+        }
+        state.end()
+    }
+}
 pub struct RibItems<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> {
     ribsafi: &'a BgpRIBSafi<T>,
     filter: &'a ribfilter::RouteFilter,
@@ -456,7 +570,11 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
             .skip(self.params.skip)
             .take(self.params.limit)
         {
-            state.serialize_entry(&k.to_string(), &v)?;
+            let v1 = BSEItems::new(&v, &self.params);
+            if v1.is_empty() {
+                continue;
+            }
+            state.serialize_entry(&k.to_string(), &v1)?;
             cnt += 1;
         }
         if cnt < 1 {
@@ -481,8 +599,11 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
             .skip(self.params.skip)
             .take(self.params.limit)
             {
+                let v = BSEItems::new(&v, &self.params);
+                if v.is_empty() {
+                    continue;
+                }
                 state.serialize_entry(&k.to_string(), &v)?;
-                cnt += 1;
             }
         }
         state.end()

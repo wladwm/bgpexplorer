@@ -349,7 +349,13 @@ impl SvcConfig {
         let peers: Vec<Arc<ProtoPeer>> = conf
             .iter()
             .filter(|x| x.0 != "main")
-            .filter_map(|x| ProtoPeer::from_ini(x.1).ok())
+            .filter_map(|x| match ProtoPeer::from_ini(x.1) {
+                Err(e) => {
+                    warn!("Peer {} error: {}", x.0, e);
+                    None
+                }
+                Ok(p) => Some(p),
+            })
             .map(|x| Arc::new(x))
             .collect();
         if peers.len() < 1 {

@@ -8,7 +8,8 @@ use zettabgp::prelude::*;
 pub struct BmpPeer<'a, H: BgpUpdateHandler> {
     peersock: tokio::net::TcpStream,
     peer: Arc<ProtoPeer>,
-    sessids: BTreeMap<BmpMessagePeerHeader, BgpSessionId>,
+    sess: BMPSession,
+    sessids: BTreeMap<BgpSessionKey, BgpSessionId>,
     update_handler: &'a H,
 }
 
@@ -21,6 +22,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
         BmpPeer {
             peersock: sock,
             peer: peer,
+            sess: Default::default(),
             sessids: BTreeMap::new(),
             update_handler: handler,
         }
@@ -43,10 +45,10 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                     "Register session id {} for peer {:?}",
                     sessid, pu
                 );
-                self.sessids.insert(pu.peer, sessid);
+                self.sessids.insert(BgpSessionKey::from(&pu.peer), sessid);
             }
             BmpMessage::RouteMonitoring(rm) => {
-                let sessid = match self.sessids.get(&rm.peer) {
+                let sessid = match self.sessids.get(&BgpSessionKey::from(&rm.peer)) {
                     None => {
                         if let Some(ref filter_rd) = self.peer.flt_rd {
                             if rm.peer.peerdistinguisher == *filter_rd {
@@ -125,7 +127,7 @@ impl<'a, H: BgpUpdateHandler> BmpPeer<'a, H> {
                     }
                 }
             };
-            let msg = match BmpMessage::decode_from(&buf[0..(bmph.0.msglength - 5)]) {
+            let msg = match self.sess.decode_from(&buf[0..(bmph.0.msglength - 5)]) {
                 Err(e) => {
                     warn!("BMP decode error: {:?}", e);
                     continue;

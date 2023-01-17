@@ -2,6 +2,7 @@ extern crate async_trait;
 extern crate futures;
 extern crate futures_util;
 extern crate hyper;
+extern crate websocket_codec;
 extern crate tokio;
 #[macro_use]
 extern crate lazy_static;
@@ -14,16 +15,21 @@ extern crate pretty_env_logger;
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 
+use hyper::header::{self, HeaderValue};
 use hyper::service::{make_service_fn, service_fn};
+use hyper::upgrade::Upgraded;
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use websocket_codec::{ClientRequest, MessageCodec, Message};
+use futures::SinkExt;
 
 use tokio::fs::File;
 use tokio::*;
-use tokio_util::codec::{BytesCodec, FramedRead};
+use tokio_util::codec::{BytesCodec, FramedRead, Decoder, Framed};
 
 mod bgpattrs;
 mod bgppeer;
 mod bgprib;
+use bgprib::*;
 mod bmppeer;
 mod service;
 use service::*;
@@ -36,10 +42,12 @@ use config::*;
 mod ribfilter;
 mod ribservice;
 mod timestamp;
+mod subscriber;
 
 use std::sync::Arc;
 
 static NOTFOUND: &[u8] = b"Not Found";
+
 /// HTTP status code 404
 fn not_found() -> Response<Body> {
     Response::builder()
@@ -84,6 +92,45 @@ impl Svc {
             bgp.shutdown().await;
         }
     }
+    async fn on_client(&self, mut client: Framed<Upgraded,MessageCodec>) {
+        if self.bgp.is_none() {
+            let _ = client.send(Message::close(None)).await;
+            return
+        }
+        let rcv = self.bgp.as_ref().unwrap().subscribe_bgp().await;
+        subscriber::on_subscriber_client(rcv,client).await;
+    }
+    async fn server_upgrade(&self, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+        let mut res = Response::new(Body::empty());
+
+        let ws_accept = if let Ok(req) = ClientRequest::parse(|name| {
+            let h = req.headers().get(name)?;
+            h.to_str().ok()
+        }) {
+            req.ws_accept()
+        } else {
+            *res.status_mut() = StatusCode::BAD_REQUEST;
+            return Ok(res);
+        };
+        let slf = self.clone();
+        task::spawn(async move {
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    let client = MessageCodec::server().framed(upgraded);
+                    slf.on_client(client).await;
+                }
+                Err(e) => error!("upgrade error: {}", e),
+            }
+        });
+    
+        *res.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+    
+        let headers = res.headers_mut();
+        headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+        headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
+        headers.insert(header::SEC_WEBSOCKET_ACCEPT, HeaderValue::from_str(&ws_accept).unwrap());
+        Ok(res)
+    }
     pub async fn response_fn(&self, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
         if req.method() != Method::GET {
             return Ok(not_found());
@@ -102,6 +149,9 @@ impl Svc {
                         }
                         "ping" => {
                             return Ok(Response::new(Body::from("pong")));
+                        }
+                        "ws" => {
+                            return self.server_upgrade(req).await;
                         }
                         _ => {
                             if let Some(bgpr) = &self.bgp {

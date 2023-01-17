@@ -1,7 +1,7 @@
 use crate::bgprib::BgpRIB;
 use serde::ser::SerializeStruct;
-use std::rc::Rc;
-use std::sync::{Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 use zettabgp::prelude::*;
 
 lazy_static! {
@@ -21,17 +21,17 @@ pub fn rib_get<'a>() -> std::sync::MutexGuard<'a,Option<BgpRIB>> {
 pub struct BgpAttrs {
     pub origin: BgpAttrOrigin,
     pub nexthop: BgpAddr,
-    pub aspath: Rc<BgpASpath>,
-    pub comms: Rc<BgpCommunityList>,
-    pub lcomms: Rc<BgpLargeCommunityList>,
-    pub extcomms: Rc<BgpExtCommunityList>,
+    pub aspath: Arc<BgpASpath>,
+    pub comms: Arc<BgpCommunityList>,
+    pub lcomms: Arc<BgpLargeCommunityList>,
+    pub extcomms: Arc<BgpExtCommunityList>,
     pub med: Option<u32>,
     pub localpref: Option<u32>,
     pub atomicaggregate: Option<std::net::IpAddr>,
     pub aggregatoras: Option<BgpAggregatorAS>,
     pub originator: Option<std::net::IpAddr>,
-    pub clusterlist: Option<Rc<BgpClusterList>>,
-    pub pmsi_ta: Option<Rc<BgpPMSITunnel>>,
+    pub clusterlist: Option<Arc<BgpClusterList>>,
+    pub pmsi_ta: Option<Arc<BgpPMSITunnel>>,
 }
 enum BgpAttrsField {
     Origin,
@@ -151,17 +151,17 @@ impl<'de> serde::de::Visitor<'de> for BgpAttrsVisitor {
             Some(rib) => Ok(BgpAttrs {
                 origin,
                 nexthop,
-                aspath: rib.pathes.get(Rc::new(aspath)).unwrap(),
-                comms: rib.comms.get(Rc::new(comms)).unwrap(),
-                lcomms: rib.lcomms.get(Rc::new(lcomms)).unwrap(),
-                extcomms: rib.extcomms.get(Rc::new(extcomms)).unwrap(),
+                aspath: rib.pathes.get(Arc::new(aspath)).unwrap(),
+                comms: rib.comms.get(Arc::new(comms)).unwrap(),
+                lcomms: rib.lcomms.get(Arc::new(lcomms)).unwrap(),
+                extcomms: rib.extcomms.get(Arc::new(extcomms)).unwrap(),
                 med,
                 localpref,
                 atomicaggregate,
                 aggregatoras,
                 originator,
-                clusterlist: clusterlist.map(|x| rib.clusters.get(Rc::new(x)).unwrap()),
-                pmsi_ta: pmsi_ta.map(|x| rib.pmsi_ta_s.get(Rc::new(x)).unwrap()),
+                clusterlist: clusterlist.map(|x| rib.clusters.get(Arc::new(x)).unwrap()),
+                pmsi_ta: pmsi_ta.map(|x| rib.pmsi_ta_s.get(Arc::new(x)).unwrap()),
             }),
         }
     }
@@ -288,17 +288,17 @@ impl<'de> serde::de::Visitor<'de> for BgpAttrsVisitor {
             Some(rib) => Ok(BgpAttrs {
                 origin,
                 nexthop,
-                aspath: rib.pathes.get(Rc::new(aspath)).unwrap(),
-                comms: rib.comms.get(Rc::new(comms)).unwrap(),
-                lcomms: rib.lcomms.get(Rc::new(lcomms)).unwrap(),
-                extcomms: rib.extcomms.get(Rc::new(extcomms)).unwrap(),
+                aspath: rib.pathes.get(Arc::new(aspath)).unwrap(),
+                comms: rib.comms.get(Arc::new(comms)).unwrap(),
+                lcomms: rib.lcomms.get(Arc::new(lcomms)).unwrap(),
+                extcomms: rib.extcomms.get(Arc::new(extcomms)).unwrap(),
                 med,
                 localpref,
                 atomicaggregate,
                 aggregatoras,
                 originator,
-                clusterlist: clusterlist.map(|x| rib.clusters.get(Rc::new(x)).unwrap()),
-                pmsi_ta: pmsi_ta.map(|x| rib.pmsi_ta_s.get(Rc::new(x)).unwrap()),
+                clusterlist: clusterlist.map(|x| rib.clusters.get(Arc::new(x)).unwrap()),
+                pmsi_ta: pmsi_ta.map(|x| rib.pmsi_ta_s.get(Arc::new(x)).unwrap()),
             }),
         }
     }
@@ -338,10 +338,10 @@ impl BgpAttrs {
         BgpAttrs {
             origin: BgpAttrOrigin::Incomplete,
             nexthop: BgpAddr::None,
-            aspath: Rc::new(BgpASpath::new()),
-            comms: Rc::new(BgpCommunityList::new()),
-            lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::new()),
+            aspath: Arc::new(BgpASpath::new()),
+            comms: Arc::new(BgpCommunityList::new()),
+            lcomms: Arc::new(BgpLargeCommunityList::new()),
+            extcomms: Arc::new(BgpExtCommunityList::new()),
             med: None,
             localpref: None,
             atomicaggregate: None,
@@ -355,11 +355,11 @@ impl BgpAttrs {
 #[derive(Debug, Clone)]
 pub struct BgpAttrEntry {
     pub active: bool,
-    pub attrs: Rc<BgpAttrs>,
+    pub attrs: Arc<BgpAttrs>,
     pub labels: Option<MplsLabels>,
 }
 impl BgpAttrEntry {
-    pub fn new(act: bool, atr: Rc<BgpAttrs>, lbl: Option<MplsLabels>) -> BgpAttrEntry {
+    pub fn new(act: bool, atr: Arc<BgpAttrs>, lbl: Option<MplsLabels>) -> BgpAttrEntry {
         BgpAttrEntry {
             active: act,
             attrs: atr,
@@ -429,10 +429,10 @@ impl<'de> serde::de::Visitor<'de> for BgpAttrEntryVisitor {
             .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
         let mut mrib = rib_get();
         match (*mrib).as_mut() {
-            None => Ok(BgpAttrEntry::new(active, Rc::new(attrs), labels)),
+            None => Ok(BgpAttrEntry::new(active, Arc::new(attrs), labels)),
             Some(rib) => Ok(BgpAttrEntry {
                 active,
-                attrs: rib.attrs.get(Rc::new(attrs)).unwrap(),
+                attrs: rib.attrs.get(Arc::new(attrs)).unwrap(),
                 labels,
             }),
         }
@@ -473,10 +473,10 @@ impl<'de> serde::de::Visitor<'de> for BgpAttrEntryVisitor {
         let labels = labels.ok_or_else(|| serde::de::Error::missing_field(BAE_VARS[2]))?;
         let mut mrib = rib_get();
         match (*mrib).as_mut() {
-            None => Ok(BgpAttrEntry::new(active, Rc::new(attrs), labels)),
+            None => Ok(BgpAttrEntry::new(active, Arc::new(attrs), labels)),
             Some(rib) => Ok(BgpAttrEntry {
                 active,
-                attrs: rib.attrs.get(Rc::new(attrs)).unwrap(),
+                attrs: rib.attrs.get(Arc::new(attrs)).unwrap(),
                 labels,
             }),
         }

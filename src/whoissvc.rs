@@ -56,10 +56,14 @@ impl WhoisRec {
         }
     }
     fn mkfrom(gts: i64, vl: String) -> WhoisRec {
+        lazy_static! {
+            static ref GMT_OFFSET: FixedOffset = chrono::FixedOffset::east_opt(0).unwrap();
+            static ref DEF_NDT: NaiveDateTime = NaiveDateTime::new(NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),NaiveTime::from_hms_milli_opt(12, 0, 0, 0).unwrap());
+        };
         WhoisRec {
             ts: DateTime::<Local>::from_utc(
-                NaiveDateTime::from_timestamp(gts, 0),
-                chrono::FixedOffset::east(0),
+                NaiveDateTime::from_timestamp_opt(gts, 0).unwrap_or(*DEF_NDT),
+                *GMT_OFFSET,
             ),
             val: vl,
         }

@@ -1,4 +1,5 @@
 use chrono::prelude::*;
+use chrono::{Local, TimeZone, LocalResult};
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Timestamp(DateTime<Local>);
@@ -36,6 +37,10 @@ impl<'de> serde::de::Deserialize<'de> for Timestamp {
     where
         D: serde::de::Deserializer<'de>,
     {
-        Ok(Timestamp(Local.timestamp_millis(i64::deserialize(deserializer)?)))
+        Ok(Timestamp(match Local.timestamp_millis_opt(i64::deserialize(deserializer)?) {
+            LocalResult::Single(dt) => dt,
+            LocalResult::Ambiguous(t1, _) => t1,
+            LocalResult::None => Local::now()
+        }))
     }
 }

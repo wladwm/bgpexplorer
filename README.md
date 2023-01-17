@@ -49,6 +49,7 @@ $ cat > bgpexplorer.ini <<EOF
 httplisten=0.0.0.0:8080
 httproot=contrib
 whoisjsonconfig=whois.json
+snapshot=snapshot.bgp
 
 [s0]
 mode=bgpactive

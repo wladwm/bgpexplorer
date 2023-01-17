@@ -5,7 +5,7 @@ use crate::service::*;
 use regex::Regex;
 use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
-use std::rc::Rc;
+use std::sync::Arc;
 use zettabgp::prelude::*;
 
 pub struct SortIter<T> {
@@ -556,11 +556,11 @@ pub struct RouteFilterParams<'a> {
     pub onlyactive: bool,
 }
 impl<'a> RouteFilterParams<'a> {
-    pub fn new(flt: &'a RouteFilter, max_depth: usize, only_active: bool) -> RouteFilterParams {
+    pub fn new(filter: &'a RouteFilter, maxdepth: usize, onlyactive: bool) -> RouteFilterParams {
         RouteFilterParams {
-            filter: flt,
-            maxdepth: max_depth,
-            onlyactive: only_active,
+            filter,
+            maxdepth,
+            onlyactive,
         }
     }
 }
@@ -1679,7 +1679,6 @@ impl FilterTerm {
 mod tests {
     use super::*;
     use crate::config::*;
-    use std::rc::Rc;
 
     #[test]
     fn test_ribfilter_fi_ipv4_host() {
@@ -1893,10 +1892,10 @@ mod tests {
         assert!(BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 16)
             .contains(&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24)));
         let mut safi = BgpRIBSafi::<BgpAddrV4>::new(10, HistoryChangeMode::EveryUpdate);
-        let attrs = std::rc::Rc::new(BgpAttrs::new());
+        let attrs = Arc::new(BgpAttrs::new());
         safi.handle_updates_afi(
             0,
-            vec![
+            &[
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(11, 0, 0, 1), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24),
@@ -1921,10 +1920,10 @@ mod tests {
     #[test]
     fn test_ribfilter_num1() {
         let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10, HistoryChangeMode::EveryUpdate);
-        let attrs = std::rc::Rc::new(BgpAttrs::new());
+        let attrs = Arc::new(BgpAttrs::new());
         safi.handle_updates_afi(
             0,
-            vec![
+            &[
                 WithRd::<BgpAddrV4>::new(
                     BgpRD::new(100, 1000),
                     BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
@@ -1972,10 +1971,10 @@ mod tests {
     #[test]
     fn test_ribfilter_re1() {
         let mut safi = BgpRIBSafi::<WithRd<BgpAddrV4>>::new(10, HistoryChangeMode::EveryUpdate);
-        let attrs = std::rc::Rc::new(BgpAttrs::new());
+        let attrs = Arc::new(BgpAttrs::new());
         safi.handle_updates_afi(
             0,
-            vec![
+            &[
                 WithRd::<BgpAddrV4>::new(
                     BgpRD::new(100, 1000),
                     BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
@@ -2015,10 +2014,10 @@ mod tests {
                 originator: None,
                 clusterlist: None,
                 pmsi_ta: None,
-                aspath: Rc::new(BgpASpath::new()),
-                comms: Rc::new(BgpCommunityList::new()),
-                lcomms: Rc::new(BgpLargeCommunityList::new()),
-                extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
+                aspath: Arc::new(BgpASpath::new()),
+                comms: Arc::new(BgpCommunityList::new()),
+                lcomms: Arc::new(BgpLargeCommunityList::new()),
+                extcomms: Arc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
                     ctype: 0,
                     subtype: 2,
                     a: 200,
@@ -2029,7 +2028,7 @@ mod tests {
             };
             safi.handle_updates_afi(
                 0,
-                vec![
+                &[
                     WithRd::<BgpAddrV4>::new(
                         BgpRD::new(100, 1000),
                         BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
@@ -2047,15 +2046,15 @@ mod tests {
                         BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
                     ),
                 ],
-                std::rc::Rc::new(attrs1),
+                Arc::new(attrs1),
             );
             let attrs2 = BgpAttrs {
                 origin: BgpAttrOrigin::Incomplete,
                 nexthop: BgpAddr::None,
-                aspath: Rc::new(BgpASpath::new()),
-                comms: Rc::new(BgpCommunityList::new()),
-                lcomms: Rc::new(BgpLargeCommunityList::new()),
-                extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
+                aspath: Arc::new(BgpASpath::new()),
+                comms: Arc::new(BgpCommunityList::new()),
+                lcomms: Arc::new(BgpLargeCommunityList::new()),
+                extcomms: Arc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
                     ctype: 0,
                     subtype: 2,
                     a: 400,
@@ -2071,7 +2070,7 @@ mod tests {
             };
             safi.handle_updates_afi(
                 0,
-                vec![
+                &[
                     WithRd::<BgpAddrV4>::new(
                         BgpRD::new(100, 1000),
                         BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 2), 32),
@@ -2089,7 +2088,7 @@ mod tests {
                         BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 2), 32),
                     ),
                 ],
-                std::rc::Rc::new(attrs2),
+                Arc::new(attrs2),
             );
         }
         assert_eq!(safi.len(), 8);
@@ -2128,10 +2127,10 @@ mod tests {
             originator: None,
             clusterlist: None,
             pmsi_ta: None,
-            aspath: Rc::new(BgpASpath::new()),
-            comms: Rc::new(BgpCommunityList::new()),
-            lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
+            aspath: Arc::new(BgpASpath::new()),
+            comms: Arc::new(BgpCommunityList::new()),
+            lcomms: Arc::new(BgpLargeCommunityList::new()),
+            extcomms: Arc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
                 ctype: 0,
                 subtype: 2,
                 a: 200,
@@ -2142,14 +2141,14 @@ mod tests {
         };
         safi.handle_updates_afi(
             0,
-            vec![
+            &[
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(11, 0, 0, 1), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 2), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 255), 32),
             ],
-            std::rc::Rc::new(attrs1),
+            Arc::new(attrs1),
         );
         assert_eq!(safi.len(), 5);
         let mut flt = RouteFilter::new();
@@ -2182,10 +2181,10 @@ mod tests {
             originator: None,
             clusterlist: None,
             pmsi_ta: None,
-            aspath: Rc::new(BgpASpath::new()),
-            comms: Rc::new(BgpCommunityList::new()),
-            lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
+            aspath: Arc::new(BgpASpath::new()),
+            comms: Arc::new(BgpCommunityList::new()),
+            lcomms: Arc::new(BgpLargeCommunityList::new()),
+            extcomms: Arc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
                 ctype: 0,
                 subtype: 2,
                 a: 200,
@@ -2196,14 +2195,14 @@ mod tests {
         };
         safi.handle_updates_afi(
             0,
-            vec![
+            &[
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 1), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(11, 0, 0, 1), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 2), 32),
                 BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 255), 32),
             ],
-            std::rc::Rc::new(attrs1),
+            Arc::new(attrs1),
         );
         assert_eq!(safi.len(), 5);
         let mut flt = RouteFilter::new();
@@ -2224,10 +2223,10 @@ mod tests {
             originator: None,
             clusterlist: None,
             pmsi_ta: None,
-            aspath: Rc::new(BgpASpath::new()),
-            comms: Rc::new(BgpCommunityList::new()),
-            lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
+            aspath: Arc::new(BgpASpath::new()),
+            comms: Arc::new(BgpCommunityList::new()),
+            lcomms: Arc::new(BgpLargeCommunityList::new()),
+            extcomms: Arc::new(BgpExtCommunityList::from_vec(vec![BgpExtCommunity {
                 ctype: 0,
                 subtype: 2,
                 a: 200,
@@ -2238,7 +2237,7 @@ mod tests {
         };
         safi.handle_updates_afi(
             0,
-            vec![
+            &[
                 Labeled::<WithRd<BgpAddrV4>>::new(
                     MplsLabels::fromvec(vec![1]),
                     WithRd::<BgpAddrV4>::new(
@@ -2296,7 +2295,7 @@ mod tests {
                     ),
                 ),
             ],
-            std::rc::Rc::new(attrs1),
+            Arc::new(attrs1),
         );
         assert_eq!(safi.len(), 8);
         assert_eq!(
@@ -2334,10 +2333,10 @@ mod tests {
             originator: None,
             clusterlist: None,
             pmsi_ta: None,
-            aspath: Rc::new(BgpASpath::new()),
-            comms: Rc::new(BgpCommunityList::new()),
-            lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![
+            aspath: Arc::new(BgpASpath::new()),
+            comms: Arc::new(BgpCommunityList::new()),
+            lcomms: Arc::new(BgpLargeCommunityList::new()),
+            extcomms: Arc::new(BgpExtCommunityList::from_vec(vec![
                 BgpExtCommunity::rt_asn(1, 1),
             ])),
             med: None,
@@ -2351,10 +2350,10 @@ mod tests {
             originator: None,
             clusterlist: None,
             pmsi_ta: None,
-            aspath: Rc::new(BgpASpath::new()),
-            comms: Rc::new(BgpCommunityList::new()),
-            lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![
+            aspath: Arc::new(BgpASpath::new()),
+            comms: Arc::new(BgpCommunityList::new()),
+            lcomms: Arc::new(BgpLargeCommunityList::new()),
+            extcomms: Arc::new(BgpExtCommunityList::from_vec(vec![
                 BgpExtCommunity::rt_asn(1, 2),
             ])),
             med: None,
@@ -2395,10 +2394,10 @@ mod tests {
             originator: None,
             clusterlist: None,
             pmsi_ta: None,
-            aspath: Rc::new(BgpASpath::new()),
-            comms: Rc::new(BgpCommunityList::new()),
-            lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![
+            aspath: Arc::new(BgpASpath::new()),
+            comms: Arc::new(BgpCommunityList::new()),
+            lcomms: Arc::new(BgpLargeCommunityList::new()),
+            extcomms: Arc::new(BgpExtCommunityList::from_vec(vec![
                 BgpExtCommunity::rt_asn(1, 1),
             ])),
             med: None,
@@ -2412,10 +2411,10 @@ mod tests {
             originator: None,
             clusterlist: None,
             pmsi_ta: None,
-            aspath: Rc::new(BgpASpath::new()),
-            comms: Rc::new(BgpCommunityList::new()),
-            lcomms: Rc::new(BgpLargeCommunityList::new()),
-            extcomms: Rc::new(BgpExtCommunityList::from_vec(vec![
+            aspath: Arc::new(BgpASpath::new()),
+            comms: Arc::new(BgpCommunityList::new()),
+            lcomms: Arc::new(BgpLargeCommunityList::new()),
+            extcomms: Arc::new(BgpExtCommunityList::from_vec(vec![
                 BgpExtCommunity::rt_asn(1, 2),
             ])),
             med: None,

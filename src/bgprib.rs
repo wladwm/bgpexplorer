@@ -9,19 +9,124 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{BufReader, BufWriter};
 use std::iter::Iterator;
 use std::ops::Deref;
-use std::rc::Rc;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 use zettabgp::prelude::*;
 
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum BgpRibKind {
+    IpV4u,
+    IpV4m,
+    IpV4LU,
+    VpnV4u,
+    VpnV4m,
+    IpV6u,
+    IpV6LU,
+    VpnV6u,
+    VpnV6m,
+    L2vpls,
+    MVpn,
+    EVpn,
+    Fs4u,
+    IpV4mdt,
+    Ipv6mdt,
+}
+impl BgpRibKind {
+    pub fn from_bgp_addrs(addrs:&BgpAddrs) -> Option<BgpRibKind> {
+        match addrs {
+            BgpAddrs::None => None,
+            BgpAddrs::IPV4U(_) => Some(BgpRibKind::IpV4u),
+            BgpAddrs::IPV4UP(_) => Some(BgpRibKind::IpV4u),
+            BgpAddrs::IPV4M(_) => Some(BgpRibKind::IpV4m),
+            BgpAddrs::IPV4MP(_) => Some(BgpRibKind::IpV4m),
+            BgpAddrs::IPV4LU(_) => Some(BgpRibKind::IpV4LU),
+            BgpAddrs::IPV4LUP(_) => Some(BgpRibKind::IpV4LU),
+            BgpAddrs::VPNV4U(_) => Some(BgpRibKind::VpnV4u),
+            BgpAddrs::VPNV4UP(_) => Some(BgpRibKind::VpnV4u),
+            BgpAddrs::VPNV4M(_) => Some(BgpRibKind::VpnV4m),
+            BgpAddrs::VPNV4MP(_) => Some(BgpRibKind::VpnV4m),
+            BgpAddrs::IPV4MDT(_) => Some(BgpRibKind::IpV4mdt),
+            BgpAddrs::IPV4MDTP(_) => Some(BgpRibKind::IpV4mdt),
+            BgpAddrs::IPV6U(_) => Some(BgpRibKind::IpV6u),
+            BgpAddrs::IPV6UP(_) => Some(BgpRibKind::IpV6u),
+            BgpAddrs::IPV6M(_) => None,
+            BgpAddrs::IPV6MP(_) => None,
+            BgpAddrs::IPV6LU(_) => Some(BgpRibKind::IpV6LU),
+            BgpAddrs::IPV6LUP(_) => Some(BgpRibKind::IpV6LU),
+            BgpAddrs::VPNV6U(_) => Some(BgpRibKind::VpnV6u),
+            BgpAddrs::VPNV6UP(_) => Some(BgpRibKind::VpnV6u),
+            BgpAddrs::VPNV6M(_) => Some(BgpRibKind::VpnV6m),
+            BgpAddrs::VPNV6MP(_) => Some(BgpRibKind::VpnV6m),
+            BgpAddrs::IPV6MDT(_) => Some(BgpRibKind::Ipv6mdt),
+            BgpAddrs::IPV6MDTP(_) => Some(BgpRibKind::Ipv6mdt),
+            BgpAddrs::L2VPLS(_) => Some(BgpRibKind::Ipv6mdt),
+            BgpAddrs::MVPN(_) => Some(BgpRibKind::MVpn),
+            BgpAddrs::EVPN(_) => Some(BgpRibKind::EVpn),
+            BgpAddrs::FS4U(_) => Some(BgpRibKind::Fs4u),
+            BgpAddrs::FS6U(_) => None,
+            BgpAddrs::FSV4U(_) => None,
+        }
+    }
+}
+impl Default for BgpRibKind {
+    fn default() -> BgpRibKind {
+        BgpRibKind::IpV4u
+    }
+}
+impl std::str::FromStr for BgpRibKind {
+    type Err = BgpError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ipv4u" => Ok(BgpRibKind::IpV4u),
+            "ipv4m" => Ok(BgpRibKind::IpV4m),
+            "ipv4lu" => Ok(BgpRibKind::IpV4LU),
+            "vpnv4u" => Ok(BgpRibKind::VpnV4u),
+            "vpnv4m" => Ok(BgpRibKind::VpnV4m),
+            "ipv6u" => Ok(BgpRibKind::IpV6u),
+            "ipv6lu" => Ok(BgpRibKind::IpV6LU),
+            "vpnv6u" => Ok(BgpRibKind::VpnV6u),
+            "vpnv6m" => Ok(BgpRibKind::VpnV6m),
+            "l2vpls" => Ok(BgpRibKind::L2vpls),
+            "mvpn" => Ok(BgpRibKind::MVpn),
+            "evpn" => Ok(BgpRibKind::EVpn),
+            "fs4u" => Ok(BgpRibKind::Fs4u),
+            "ipv4mdt" => Ok(BgpRibKind::IpV4mdt),
+            "ipv6mdt" => Ok(BgpRibKind::Ipv6mdt),
+            _ => Err(BgpError::static_str("Invalid RIB kind"))
+        }
+    }
+}
+impl std::fmt::Display for BgpRibKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            BgpRibKind::IpV4u => f.write_str("ipv4u"),
+            BgpRibKind::IpV4m => f.write_str("ipv4m"),
+            BgpRibKind::IpV4LU => f.write_str("ipv4lu"),
+            BgpRibKind::VpnV4u => f.write_str("vpnv4u"),
+            BgpRibKind::VpnV4m => f.write_str("vpnv4m"),
+            BgpRibKind::IpV6u => f.write_str("ipv6u"),
+            BgpRibKind::IpV6LU => f.write_str("ipv6lu"),
+            BgpRibKind::VpnV6u => f.write_str("vpnv6u"),
+            BgpRibKind::VpnV6m => f.write_str("vpnv6m"),
+            BgpRibKind::L2vpls => f.write_str("l2vpls"),
+            BgpRibKind::MVpn => f.write_str("mvpn"),
+            BgpRibKind::EVpn => f.write_str("evpn"),
+            BgpRibKind::Fs4u => f.write_str("fs4u"),
+            BgpRibKind::IpV4mdt => f.write_str("ipv4mdt"),
+            BgpRibKind::Ipv6mdt => f.write_str("ipv6mdt"),
+        }
+    }
+}
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RibItem<T: std::hash::Hash + Eq + Ord> {
-    pub item: std::rc::Rc<T>,
+    pub item: Arc<T>,
 }
 impl<T: std::hash::Hash + Eq + Ord> RibItem<T> {
-    pub fn fromrc(itm: &std::rc::Rc<T>) -> RibItem<T> {
+    pub fn fromrc(itm: &Arc<T>) -> RibItem<T> {
         RibItem { item: itm.clone() }
     }
     pub fn is_empty(&self) -> bool {
-        Rc::strong_count(&self.item) < 2
+        Arc::strong_count(&self.item) < 2
     }
 }
 impl<T: std::hash::Hash + Eq + Ord + serde::Serialize> serde::Serialize for RibItem<T> {
@@ -61,7 +166,7 @@ impl<T: std::hash::Hash + Eq + PartialOrd + Ord> RibItemStore<T> {
             self.items = trg;
         }
     }
-    pub fn get(&mut self, item: Rc<T>) -> Result<Rc<T>, Box<dyn std::error::Error>> {
+    pub fn get(&mut self, item: Arc<T>) -> Result<Arc<T>, Box<dyn std::error::Error>> {
         match self.items.get(&RibItem::fromrc(&item)) {
             Some(n) => Ok(n.item.clone()),
             None => {
@@ -127,11 +232,11 @@ impl<K: Eq + Ord + Clone, T: BgpRIBKey> BgpRIBIndex<K, T> {
 }
 #[derive(Clone)]
 pub struct ClonableIterator<'a, K, V> {
-    pub itr: Rc<RefCell<Box<dyn Iterator<Item = (K, V)> + 'a>>>,
+    pub itr: Arc<RefCell<Box<dyn Iterator<Item = (K, V)> + 'a>>>,
 }
 impl<'a, K, V> ClonableIterator<'a, K, V> {
     pub fn new(
-        sitr: Rc<RefCell<Box<dyn Iterator<Item = (K, V)> + 'a>>>,
+        sitr: Arc<RefCell<Box<dyn Iterator<Item = (K, V)> + 'a>>>,
     ) -> ClonableIterator<'a, K, V> {
         ClonableIterator { itr: sitr }
     }
@@ -139,7 +244,7 @@ impl<'a, K, V> ClonableIterator<'a, K, V> {
 #[macro_export]
 macro_rules! clone_iter {
     ( $x:expr ) => {
-        ClonableIterator::new(Rc::new(std::cell::RefCell::new(Box::new($x))))
+        ClonableIterator::new(Arc::new(std::cell::RefCell::new(Box::new($x))))
     };
 }
 impl<'a, K, V> std::iter::Iterator for ClonableIterator<'a, K, V> {
@@ -389,12 +494,12 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
         }
         ret
     }
-    pub fn handle_withdraws_afi(&mut self, session: BgpSessionId, v: &Vec<T>) {
+    pub fn handle_withdraws_afi(&mut self, session: BgpSessionId, v: &[T]) {
         if v.len() < 1 {
             return;
         }
         let now = Timestamp::now();
-        for i in v.into_iter() {
+        for i in v.iter() {
             //TODO: indexes cleanup
             match self.items.get_mut(&i) {
                 None => {}
@@ -428,12 +533,12 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
             }
         }
     }
-    pub fn handle_updates_afi(&mut self, session: BgpSessionId, v: Vec<T>, rattr: Rc<BgpAttrs>) {
+    pub fn handle_updates_afi(&mut self, session: BgpSessionId, v: &[T], rattr: Arc<BgpAttrs>) {
         if v.len() < 1 {
             return;
         }
         let now = Timestamp::now();
-        for i in v.into_iter() {
+        for i in v.iter() {
             for aspathitem in rattr.aspath.value.iter() {
                 self.idx_aspath.set(aspathitem, &i);
             }
@@ -451,7 +556,7 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                 None => {
                     let mut hist = BgpSessionEntry::new();
                     hist.insert(session, 0, now.clone(), histrec);
-                    self.items.insert(i, hist);
+                    self.items.insert(i.clone(), hist);
                 }
                 Some(hist) => {
                     hist.shrink_hist(self.log_size - 1);
@@ -476,12 +581,12 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
             };
         }
     }
-    pub fn handle_withdraws_afi_pathid(&mut self, session: BgpSessionId, v: &Vec<WithPathId<T>>) {
+    pub fn handle_withdraws_afi_pathid(&mut self, session: BgpSessionId, v: &[WithPathId<T>]) {
         if v.len() < 1 {
             return;
         }
         let now = Timestamp::now();
-        for i in v.into_iter() {
+        for i in v.iter() {
             //TODO: indexes cleanup
             match self.items.get_mut(&i.nlri) {
                 None => {}
@@ -522,13 +627,13 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
     pub fn handle_updates_afi_pathid(
         &mut self,
         session: BgpSessionId,
-        v: Vec<WithPathId<T>>,
-        rattr: Rc<BgpAttrs>,
+        v: &[WithPathId<T>],
+        rattr: Arc<BgpAttrs>,
     ) {
         if v.len() < 1 {
             return;
         }
-        for i in v.into_iter() {
+        for i in v.iter() {
             for aspathitem in rattr.aspath.value.iter() {
                 self.idx_aspath.set(aspathitem, &i.nlri);
             }
@@ -547,7 +652,7 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                 None => {
                     let mut hist = BgpSessionEntry::new();
                     hist.insert(session, i.pathid, now, histrec);
-                    self.items.insert(i.nlri, hist);
+                    self.items.insert(i.nlri.clone(), hist);
                 }
                 Some(hist) => {
                     hist.shrink_hist(self.log_size - 1);
@@ -572,6 +677,11 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
             };
         }
     }
+}
+#[derive(Clone)]
+pub enum BgpEvent {
+    Update(BgpSessionId, Arc<BgpAttrs>, Arc<BgpAddrs>),
+    Withdraw(BgpSessionId, Arc<BgpAddrs>),
 }
 pub struct BgpRIB {
     pub pathes: RibItemStore<BgpASpath>,
@@ -598,6 +708,7 @@ pub struct BgpRIB {
     pub ipv6mdt: BgpRIBSafi<WithRd<BgpMdtV6>>,
     pub cnt_updates: u64,
     pub cnt_withdraws: u64,
+    pub events: broadcast::Sender<BgpEvent>,
     cnt_purge: u64,
     purge_after_withdraws: u64,
     purge_every: chrono::Duration,
@@ -612,6 +723,7 @@ unsafe impl Send for BgpRIB {}
 impl BgpRIB {
     pub fn new(cfg: &SvcConfig) -> BgpRIB {
         let now = Timestamp::now();
+        let (tx, _) = broadcast::channel(2);
         BgpRIB {
             pathes: RibItemStore::new(),
             comms: RibItemStore::new(),
@@ -637,6 +749,7 @@ impl BgpRIB {
             ipv6mdt: BgpRIBSafi::from_config(cfg),
             cnt_updates: 0,
             cnt_withdraws: 0,
+            events: tx,
             cnt_purge: 0,
             purge_after_withdraws: cfg.purge_after_withdraws,
             purge_every: cfg.purge_every,
@@ -787,8 +900,8 @@ impl BgpRIB {
         rib.ipv6mdt.assign(ipv6mdt);
         Ok(rib)
     }
-    pub fn handle_withdraws(&mut self, session: BgpSessionId, withdraws: &BgpAddrs) {
-        match withdraws {
+    pub fn handle_withdraws(&mut self, session: BgpSessionId, withdraws: BgpAddrs) {
+        match &withdraws {
             BgpAddrs::IPV4U(v) => self.ipv4u.handle_withdraws_afi(session, v),
             BgpAddrs::IPV4M(v) => self.ipv4m.handle_withdraws_afi(session, v),
             BgpAddrs::IPV4LU(v) => self.ipv4lu.handle_withdraws_afi(session, v),
@@ -816,47 +929,64 @@ impl BgpRIB {
             BgpAddrs::IPV6MDT(v) => self.ipv6mdt.handle_withdraws_afi(session, v),
             _ => {}
         };
+        if self.events.receiver_count() > 0 {
+            if let Err(e) = self
+                .events
+                .send(BgpEvent::Withdraw(session, Arc::new(withdraws)))
+            {
+                warn!("Publish withdraw event error: {}", e);
+            }
+        }
     }
     pub fn handle_updates(
         &mut self,
         session: BgpSessionId,
-        rattr: Rc<BgpAttrs>,
+        rattr: Arc<BgpAttrs>,
         updates: BgpAddrs,
     ) {
-        match updates {
-            BgpAddrs::IPV4U(v) => self.ipv4u.handle_updates_afi(session, v, rattr),
-            BgpAddrs::IPV4M(v) => self.ipv4m.handle_updates_afi(session, v, rattr),
-            BgpAddrs::IPV4LU(v) => self.ipv4lu.handle_updates_afi(session, v, rattr),
-            BgpAddrs::VPNV4U(v) => self.vpnv4u.handle_updates_afi(session, v, rattr),
-            BgpAddrs::VPNV4M(v) => self.vpnv4m.handle_updates_afi(session, v, rattr),
-            BgpAddrs::IPV6U(v) => self.ipv6u.handle_updates_afi(session, v, rattr),
-            BgpAddrs::IPV6LU(v) => self.ipv6lu.handle_updates_afi(session, v, rattr),
-            BgpAddrs::VPNV6U(v) => self.vpnv6u.handle_updates_afi(session, v, rattr),
-            BgpAddrs::VPNV6M(v) => self.vpnv6m.handle_updates_afi(session, v, rattr),
-            BgpAddrs::L2VPLS(v) => self.l2vpls.handle_updates_afi(session, v, rattr),
-            BgpAddrs::MVPN(v) => self.mvpn.handle_updates_afi(session, v, rattr),
-            BgpAddrs::EVPN(v) => self.evpn.handle_updates_afi(session, v, rattr),
-            BgpAddrs::FS4U(v) => self.fs4u.handle_updates_afi(session, v, rattr),
-            BgpAddrs::IPV4UP(v) => self.ipv4u.handle_updates_afi_pathid(session, v, rattr),
-            BgpAddrs::IPV4MP(v) => self.ipv4m.handle_updates_afi_pathid(session, v, rattr),
-            BgpAddrs::IPV4LUP(v) => self.ipv4lu.handle_updates_afi_pathid(session, v, rattr),
-            BgpAddrs::VPNV4UP(v) => self.vpnv4u.handle_updates_afi_pathid(session, v, rattr),
-            BgpAddrs::VPNV4MP(v) => self.vpnv4m.handle_updates_afi_pathid(session, v, rattr),
-            BgpAddrs::IPV6UP(v) => self.ipv6u.handle_updates_afi_pathid(session, v, rattr),
+        let ra = rattr.clone();
+        match &updates {
+            BgpAddrs::IPV4U(v) => self.ipv4u.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::IPV4M(v) => self.ipv4m.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::IPV4LU(v) => self.ipv4lu.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::VPNV4U(v) => self.vpnv4u.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::VPNV4M(v) => self.vpnv4m.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::IPV6U(v) => self.ipv6u.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::IPV6LU(v) => self.ipv6lu.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::VPNV6U(v) => self.vpnv6u.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::VPNV6M(v) => self.vpnv6m.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::L2VPLS(v) => self.l2vpls.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::MVPN(v) => self.mvpn.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::EVPN(v) => self.evpn.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::FS4U(v) => self.fs4u.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::IPV4UP(v) => self.ipv4u.handle_updates_afi_pathid(session, &v, rattr),
+            BgpAddrs::IPV4MP(v) => self.ipv4m.handle_updates_afi_pathid(session, &v, rattr),
+            BgpAddrs::IPV4LUP(v) => self.ipv4lu.handle_updates_afi_pathid(session, &v, rattr),
+            BgpAddrs::VPNV4UP(v) => self.vpnv4u.handle_updates_afi_pathid(session, &v, rattr),
+            BgpAddrs::VPNV4MP(v) => self.vpnv4m.handle_updates_afi_pathid(session, &v, rattr),
+            BgpAddrs::IPV6UP(v) => self.ipv6u.handle_updates_afi_pathid(session, &v, rattr),
             //BgpAddrs::IPV6MP(v) => self.ipv6m.handle_updates_afi_pathid(session, v, rattr),
-            BgpAddrs::IPV6LUP(v) => self.ipv6lu.handle_updates_afi_pathid(session, v, rattr),
-            BgpAddrs::VPNV6UP(v) => self.vpnv6u.handle_updates_afi_pathid(session, v, rattr),
-            BgpAddrs::VPNV6MP(v) => self.vpnv6m.handle_updates_afi_pathid(session, v, rattr),
-            BgpAddrs::IPV4MDT(v) => self.ipv4mdt.handle_updates_afi(session, v, rattr),
-            BgpAddrs::IPV6MDT(v) => self.ipv6mdt.handle_updates_afi(session, v, rattr),
+            BgpAddrs::IPV6LUP(v) => self.ipv6lu.handle_updates_afi_pathid(session, &v, rattr),
+            BgpAddrs::VPNV6UP(v) => self.vpnv6u.handle_updates_afi_pathid(session, &v, rattr),
+            BgpAddrs::VPNV6MP(v) => self.vpnv6m.handle_updates_afi_pathid(session, &v, rattr),
+            BgpAddrs::IPV4MDT(v) => self.ipv4mdt.handle_updates_afi(session, &v, rattr),
+            BgpAddrs::IPV6MDT(v) => self.ipv6mdt.handle_updates_afi(session, &v, rattr),
             _ => {}
         };
+        if self.events.receiver_count() > 0 {
+            if let Err(e) =
+                self.events
+                    .send(BgpEvent::Update(session, ra.clone(), Arc::new(updates)))
+            {
+                warn!("Publish update event error: {}", e);
+            }
+        }
     }
     fn register_shared<T: Clone + Eq + Ord + std::hash::Hash + std::fmt::Debug>(
         hset: &mut RibItemStore<T>,
         item: &T,
-    ) -> Result<Rc<T>, Box<dyn std::error::Error>> {
-        hset.get(std::rc::Rc::new(item.clone()))
+    ) -> Result<Arc<T>, Box<dyn std::error::Error>> {
+        hset.get(Arc::new(item.clone()))
     }
     pub fn handle_update(
         &mut self,
@@ -920,10 +1050,10 @@ impl BgpRIB {
                     attr.originator = Some(n.value);
                 }
                 BgpAttrItem::ClusterList(n) => {
-                    attr.clusterlist = Some(self.clusters.get(std::rc::Rc::new(n.clone()))?);
+                    attr.clusterlist = Some(self.clusters.get(Arc::new(n.clone()))?);
                 }
                 BgpAttrItem::PMSITunnel(n) => {
-                    attr.pmsi_ta = Some(self.pmsi_ta_s.get(std::rc::Rc::new(n.clone()))?);
+                    attr.pmsi_ta = Some(self.pmsi_ta_s.get(Arc::new(n.clone()))?);
                 }
                 BgpAttrItem::Unknown(_) => {
                     warn!("{}\tBGP Unknown: {:?}", Timestamp::now(), upd);
@@ -935,7 +1065,7 @@ impl BgpRIB {
         let rattr = BgpRIB::register_shared(&mut self.attrs, &attr)?;
         let mut updates_count: usize = upd.updates.len();
         let mut withdraws_count: usize = upd.withdraws.len();
-        self.handle_withdraws(sessionid, &upd.withdraws);
+        self.handle_withdraws(sessionid, upd.withdraws);
         self.handle_updates(sessionid, rattr.clone(), upd.updates);
         for i in upd.attrs.into_iter() {
             match i {
@@ -951,7 +1081,7 @@ impl BgpRIB {
                 }
                 BgpAttrItem::MPWithdraws(n) => {
                     withdraws_count += n.addrs.len();
-                    self.handle_withdraws(sessionid, &n.addrs);
+                    self.handle_withdraws(sessionid, n.addrs);
                 }
                 _ => {}
             }
@@ -971,7 +1101,7 @@ mod tests {
         let mut teststore = RibItemStore::<u32>::new();
         assert_eq!(teststore.len(), 0);
         {
-            let _rs = teststore.get(Rc::new(12));
+            let _rs = teststore.get(Arc::new(12));
             assert_eq!(teststore.len(), 1);
             teststore.purge();
             assert_eq!(teststore.len(), 1);
