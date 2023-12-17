@@ -1,4 +1,4 @@
-FROM rust:1.54 as builder
+FROM rust:1.71 as builder
 WORKDIR /usr/src/bgpexplorer
 COPY . .
 RUN cargo build --release
