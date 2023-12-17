@@ -2,8 +2,8 @@ extern crate async_trait;
 extern crate futures;
 extern crate futures_util;
 extern crate hyper;
-extern crate websocket_codec;
 extern crate tokio;
+extern crate websocket_codec;
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
@@ -15,16 +15,16 @@ extern crate pretty_env_logger;
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 
+use futures::SinkExt;
 use hyper::header::{self, HeaderValue};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::upgrade::Upgraded;
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
-use websocket_codec::{ClientRequest, MessageCodec, Message};
-use futures::SinkExt;
+use websocket_codec::{ClientRequest, Message, MessageCodec};
 
 use tokio::fs::File;
 use tokio::*;
-use tokio_util::codec::{BytesCodec, FramedRead, Decoder, Framed};
+use tokio_util::codec::{BytesCodec, Decoder, Framed, FramedRead};
 
 mod bgpattrs;
 mod bgppeer;
@@ -41,8 +41,8 @@ mod config;
 use config::*;
 mod ribfilter;
 mod ribservice;
-mod timestamp;
 mod subscriber;
+mod timestamp;
 
 use std::sync::Arc;
 
@@ -92,13 +92,13 @@ impl Svc {
             bgp.shutdown().await;
         }
     }
-    async fn on_client(&self, mut client: Framed<Upgraded,MessageCodec>) {
+    async fn on_client(&self, mut client: Framed<Upgraded, MessageCodec>) {
         if self.bgp.is_none() {
             let _ = client.send(Message::close(None)).await;
-            return
+            return;
         }
         let rcv = self.bgp.as_ref().unwrap().subscribe_bgp().await;
-        subscriber::on_subscriber_client(rcv,client).await;
+        subscriber::on_subscriber_client(rcv, client).await;
     }
     async fn server_upgrade(&self, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
         let mut res = Response::new(Body::empty());
@@ -122,13 +122,16 @@ impl Svc {
                 Err(e) => error!("upgrade error: {}", e),
             }
         });
-    
+
         *res.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-    
+
         let headers = res.headers_mut();
         headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
         headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
-        headers.insert(header::SEC_WEBSOCKET_ACCEPT, HeaderValue::from_str(&ws_accept).unwrap());
+        headers.insert(
+            header::SEC_WEBSOCKET_ACCEPT,
+            HeaderValue::from_str(&ws_accept).unwrap(),
+        );
         Ok(res)
     }
     pub async fn response_fn(&self, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
@@ -136,32 +139,32 @@ impl Svc {
             return Ok(not_found());
         }
         let requri = req.uri().path();
-        if requri.len() > 5 &&  requri[..5] == "/api/"[..5] {
-                let urlparts: Vec<&str> = requri.split('/').collect();
-                if urlparts.len() > 2 {
-                    match urlparts[2] {
-                        "whois" => {
-                            return self.whois.response_fn(&req).await;
-                        }
-                        "dns" => {
-                            return self.whois.response_fn(&req).await;
-                        }
-                        "ping" => {
-                            return Ok(Response::new(Body::from("pong")));
-                        }
-                        "ws" => {
-                            return self.server_upgrade(req).await;
-                        }
-                        _ => {
-                            if let Some(bgpr) = &self.bgp {
-                                return bgpr.response_fn(&req).await;
-                            } else {
-                                //panic!("No service")
-                                return Ok(Response::new(Body::from("No service")));
-                            }
+        if requri.len() > 5 && requri[..5] == "/api/"[..5] {
+            let urlparts: Vec<&str> = requri.split('/').collect();
+            if urlparts.len() > 2 {
+                match urlparts[2] {
+                    "whois" => {
+                        return self.whois.response_fn(&req).await;
+                    }
+                    "dns" => {
+                        return self.whois.response_fn(&req).await;
+                    }
+                    "ping" => {
+                        return Ok(Response::new(Body::from("pong")));
+                    }
+                    "ws" => {
+                        return self.server_upgrade(req).await;
+                    }
+                    _ => {
+                        if let Some(bgpr) = &self.bgp {
+                            return bgpr.response_fn(&req).await;
+                        } else {
+                            //panic!("No service")
+                            return Ok(Response::new(Body::from("No service")));
                         }
                     }
                 }
+            }
         }
         let filepath = self.httproot.to_string()
             + (match requri {

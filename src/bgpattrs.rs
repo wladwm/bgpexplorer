@@ -13,7 +13,7 @@ pub fn rib_set(rib: BgpRIB) {
 pub fn rib_take() -> BgpRIB {
     RIB.lock().unwrap().take().unwrap()
 }
-pub fn rib_get<'a>() -> std::sync::MutexGuard<'a,Option<BgpRIB>> {
+pub fn rib_get<'a>() -> std::sync::MutexGuard<'a, Option<BgpRIB>> {
     RIB.lock().unwrap()
 }
 

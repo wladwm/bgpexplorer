@@ -996,9 +996,9 @@ impl BgpRIB {
             _ => {}
         };
         if self.events.receiver_count() > 0 {
-            if let Err(e) =
-                self.events
-                    .send(BgpEvent::Update(session, ra, Arc::new(updates)))
+            if let Err(e) = self
+                .events
+                .send(BgpEvent::Update(session, ra, Arc::new(updates)))
             {
                 warn!("Publish update event error: {}", e);
             }
