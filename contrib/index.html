@@ -90,12 +90,14 @@
   <script type="text/javascript">
     var server_statistics = new Array();
     var bgp_sessions = new Array();
+    var server_state = "";
     var active_rib = "";
     var pagesize = 100;
     var skip = 0;
     var queryRib = new ApiQuery();
     var queryStatistics = new ApiQuery();
     var querySessions = new ApiQuery();
+    var queryState = new ApiQuery();
     function hidePopup() {
       let ppup = document.getElementById('wnd');
       if (!ppup) return;
@@ -255,7 +257,7 @@
     }
     function showTime(tms) {
       let dt=new Date(parseInt("" + tms));
-      return (""+dt.getDay()).padStart(2,"0")+"."+(""+(dt.getMonth()+1)).padStart(2,"0")+"."+(""+dt.getFullYear()).padStart(4,"0")+" "+(""+dt.getHours()).padStart(2,"0")+":"+(""+dt.getMinutes()).padStart(2,"0")+":"+(""+dt.getSeconds()).padStart(2,"0");
+      return (""+dt.getDate()).padStart(2,"0")+"."+(""+(dt.getMonth()+1)).padStart(2,"0")+"."+(""+dt.getFullYear()).padStart(4,"0")+" "+(""+dt.getHours()).padStart(2,"0")+":"+(""+dt.getMinutes()).padStart(2,"0")+":"+(""+dt.getSeconds()).padStart(2,"0");
     }
     function showAttr(route, sessionid, pathid, curtime, currec) {
       let rtxt = '';
@@ -447,7 +449,7 @@
         rbs = "No RIBs yet...";
         setTimeout(() => { CheckStat(); }, 1000);
       }
-      document.getElementById('ribs').innerHTML = rbs;
+      document.getElementById('ribs').innerHTML = server_state+" "+rbs;
       if (!actribfound) {
         active_rib = frib;
       }
@@ -499,6 +501,18 @@
           return;
         }
       }, "api/sessions");
+      queryState.Query((event) => {
+        if (event.target.status != 200) {
+          queryState.executeQuery();
+          return;
+        }
+        try {
+          server_state = event.target.responseText;
+        } catch (err) {
+          queryState.executeQuery();
+          return;
+        }
+      }, "api/state");
     }
     function showFlexElem(elm, show) {
       elm.style.display = show ? 'inline-flex' : 'none';
