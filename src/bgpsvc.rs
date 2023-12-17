@@ -39,7 +39,7 @@ impl Ord for BgpPeerDesc {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.addr.cmp(&other.addr) {
             Ordering::Equal => self.bom.cmp(&other.bom),
-            x => x
+            x => x,
         }
     }
 }
@@ -87,7 +87,7 @@ impl Ord for BgpSessionDesc {
         }
         match sp1.cmp(op1) {
             Ordering::Equal => sp2.cmp(op2),
-            x => x
+            x => x,
         }
     }
 }
@@ -160,10 +160,22 @@ impl BgpSessionStorage {
         nid
     }
 }
+
+#[derive(PartialEq, Debug)]
+pub enum BgpSessionState {
+    Idle,
+    Connect,
+    Active,
+    OpenSent,
+    OpenConfirm,
+    Established,
+    BMP,
+}
 pub struct BgpSvr {
     pub config: Arc<SvcConfig>,
     pub cancellation: tokio_util::sync::CancellationToken,
     pub rib: BgpRIBts,
+    pub session_state: std::sync::Mutex<BgpSessionState>,
     sessions: Arc<RwLock<BgpSessionStorage>>,
     upd: Option<Sender<Option<(BgpSessionId, BgpUpdateMessage)>>>,
     updater: Option<JoinHandle<()>>,
@@ -200,6 +212,7 @@ impl BgpSvr {
             cancellation: cancel_token,
             rib: BgpRIBts::new(&cfg, rib),
             sessions: Arc::new(RwLock::new(BgpSessionStorage::new())),
+            session_state: std::sync::Mutex::new(BgpSessionState::Idle),
             upd: None,
             updater: None,
         }
@@ -215,6 +228,10 @@ impl BgpSvr {
         self.upd = Some(tx);
         self.updater = Some(self.rib.run(rx));
     }
+    pub fn set_state(&self, new_state: BgpSessionState) {
+        let mut wg = self.session_state.lock().unwrap();
+        *wg = new_state;
+    }
     pub async fn run_listen(self: Arc<Self>, sockaddr: SocketAddr) -> io::Result<()> {
         let socket = if sockaddr.is_ipv4() {
             TcpSocket::new_v4()?
@@ -223,12 +240,14 @@ impl BgpSvr {
         };
         socket.bind(sockaddr)?;
         info!("Listening on {}", sockaddr);
+        self.set_state(BgpSessionState::Idle);
         let listener = socket.listen(1)?;
         loop {
             let client = match listener.accept().await {
                 Ok(acc) => acc,
                 Err(e) => return Err(e),
             };
+            self.set_state(BgpSessionState::Connect);
             info!("Incoming connected from {}", client.1);
             let fpeer: Arc<ProtoPeer> = match self.config.peers.iter().find(|p| {
                 if p.mode == PeerMode::BgpPassive || p.mode == PeerMode::BmpPassive {
@@ -251,8 +270,10 @@ impl BgpSvr {
             };
             match fpeer.mode {
                 PeerMode::BmpPassive => {
+                    self.set_state(BgpSessionState::BMP);
                     let mut peer = BmpPeer::new(client.0, fpeer, &*self);
                     peer.lifecycle(self.cancellation.clone()).await;
+                    self.set_state(BgpSessionState::Idle);
                     peer.close().await;
                 }
                 PeerMode::BgpPassive => {
@@ -272,14 +293,17 @@ impl BgpSvr {
                         &*self,
                     );
                     let mut scs: bool = true;
+                    self.set_state(BgpSessionState::OpenSent);
                     if let Err(e) = peer.start_passive().await {
                         error!("failed to create BGP peer; err = {:?}", e);
                         scs = false;
                     }
                     if scs {
+                        self.set_state(BgpSessionState::Established);
                         peer.lifecycle(self.cancellation.clone()).await;
                         info!("Session done {}", client.1);
                     };
+                    self.set_state(BgpSessionState::Idle);
                     peer.close().await;
                 }
                 _ => {}
@@ -297,6 +321,7 @@ impl BgpSvr {
             }
             Some(l) => l,
         };
+        self.set_state(BgpSessionState::Connect);
         info!("Connecting to {}", peeraddr);
         let peertcp = match tokio::net::TcpStream::connect(peeraddr).await {
             Err(e) => {
@@ -308,17 +333,20 @@ impl BgpSvr {
         match fpeer.mode {
             PeerMode::BmpActive => {
                 let mut peer = BmpPeer::new(peertcp, fpeer, &*self);
+                self.set_state(BgpSessionState::BMP);
                 peer.lifecycle(self.cancellation.clone()).await;
                 peer.close().await;
             }
             PeerMode::BgpActive => {
                 let mut peer = BgpPeer::new(fpeer.get_session_params(), peertcp, &*self);
                 let mut scs: bool = true;
+                self.set_state(BgpSessionState::OpenSent);
                 if let Err(e) = peer.start_active().await {
                     fpeer.set_session_params(peer.params.clone());
                     warn!("failed to create BGP peer; err = {:?}", e);
                     scs = false;
                 }
+                self.set_state(BgpSessionState::OpenConfirm);
                 if scs {
                     peer.lifecycle(self.cancellation.clone()).await;
                     info!("Session done {}", peeraddr);
@@ -327,6 +355,7 @@ impl BgpSvr {
             }
             _ => {}
         }
+        self.set_state(BgpSessionState::Idle);
         Ok(())
     }
     pub async fn run(self: Arc<Self>) {
@@ -397,6 +426,13 @@ impl BgpSvr {
         self.upd = None;
         self.updater = None;
     }
+    pub async fn say_state(&self) -> Result<Response<Body>, hyper::http::Error> {
+        let state = format!("{:?}", self.session_state.lock().unwrap());
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-type", "text/plain")
+            .body(state.into())
+    }
     pub async fn say_sessions(&self) -> Result<Response<Body>, hyper::http::Error> {
         let sess = match timeout(std::time::Duration::new(5, 0), self.sessions.read()).await {
             Ok(r) => r,
@@ -433,6 +469,7 @@ impl BgpSvr {
         match urlparts[2] {
             "statistics" => self.rib.say_statistics().await,
             "sessions" => self.say_sessions().await,
+            "state" => self.say_state().await,
             "json" => {
                 if urlparts.len() < 4 {
                     Ok(not_found())
