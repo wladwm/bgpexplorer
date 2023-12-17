@@ -420,6 +420,15 @@ impl FilterMatchRoute for BgpEVPN4 {
         self.ip.match_item(fi)
     }
 }
+impl FilterMatchRoute for BgpEVPN5 {
+    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        match fi.match_rd(&self.rd) {
+            FilterItemMatchResult::Unknown => {}
+            n => return n,
+        };
+        self.gw_ip.match_item(fi)
+    }
+}
 impl FilterMatchRoute for BgpEVPN {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
         match self {
@@ -427,6 +436,7 @@ impl FilterMatchRoute for BgpEVPN {
             BgpEVPN::EVPN2(r) => r.match_item(fi),
             BgpEVPN::EVPN3(r) => r.match_item(fi),
             BgpEVPN::EVPN4(r) => r.match_item(fi),
+            BgpEVPN::EVPN5(r) => r.match_item(fi),
         }
     }
 }
