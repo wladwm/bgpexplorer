@@ -1,3 +1,9 @@
+### 0.3.4 (2023-12-18)
+
+#### Features
+* zettabgp 0.3.4 with support EVPN5 routes
+* protocol session state expose via API
+
 ### 0.3.3 (2022-01-17)
 
 #### Features

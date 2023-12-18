@@ -37,6 +37,7 @@ pub struct ProtoPeer {
     pub bgppeeras: u32,
     pub flt_rd: Option<zettabgp::afi::BgpRD>,
     pub bgpsessionparams: Arc<std::sync::Mutex<Option<BgpSessionParams>>>,
+    pub caps: Vec<BgpCapability>,
 }
 impl PartialEq for ProtoPeer {
     fn eq(&self, other: &Self) -> bool {
@@ -185,6 +186,70 @@ impl ProtoPeer {
         } else {
             Some(zettabgp::afi::BgpRD::new(0, 0))
         };
+        let caps: Vec<BgpCapability> = if svcsection.contains_key("caps") {
+            match svcsection["caps"]
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("")
+            {
+                "all" => Self::all_caps(0),
+                "" | "min" | "minimal" => {
+                    vec![
+                        if peer.is_some() && peer.as_ref().unwrap().is_ipv6() {
+                            BgpCapability::SafiIPv6u
+                        } else {
+                            BgpCapability::SafiIPv4u
+                        },
+                        BgpCapability::CapASN32(0),
+                    ]
+                }
+                capsstr => {
+                    let mut caps = Vec::new();
+                    let cps = capsstr.split(",");
+                    let mut addpath = false;
+                    for cs in cps {
+                        match cs {
+                            "ipv4u" => caps.push(BgpCapability::SafiIPv4u),
+                            "ipv4lu" => caps.push(BgpCapability::SafiIPv4lu),
+                            "vpnv4u" => caps.push(BgpCapability::SafiVPNv4u),
+                            "vpnv4m" => caps.push(BgpCapability::SafiVPNv4m),
+                            "ipv4mdt" => caps.push(BgpCapability::SafiIPv4mdt),
+                            "mvpn" => caps.push(BgpCapability::SafiIPv4mvpn),
+                            "vpls" => caps.push(BgpCapability::SafiVPLS),
+                            "evpn" => caps.push(BgpCapability::SafiEVPN),
+                            "asn32" => caps.push(BgpCapability::CapASN32(0)),
+                            "ipv6u" => caps.push(BgpCapability::SafiIPv6u),
+                            "ipv6lu" => caps.push(BgpCapability::SafiIPv6lu),
+                            "vpnv6u" => caps.push(BgpCapability::SafiVPNv6u),
+                            "vpnv6m" => caps.push(BgpCapability::SafiVPNv6m),
+                            "ipv6mdt" => caps.push(BgpCapability::SafiIPv6mdt),
+                            "addpath" => addpath = true,
+                            x => warn!("Unknown capability code: {}", x),
+                        }
+                    }
+                    if addpath {
+                        let mut vap = Vec::new();
+                        for cp in caps.iter() {
+                            match cp {
+                                BgpCapability::SafiIPv4u => vap.push(
+                                    BgpCapAddPath::new_from_cap(
+                                        BgpCapability::SafiIPv4u,
+                                        true,
+                                        true,
+                                    )
+                                    .unwrap(),
+                                ),
+                                _ => {}
+                            }
+                        }
+                        caps.push(BgpCapability::CapAddPath(vap));
+                    }
+                    caps
+                }
+            }
+        } else {
+            Self::all_caps(0)
+        };
         Ok(ProtoPeer {
             routerid,
             mode: peermode,
@@ -193,12 +258,13 @@ impl ProtoPeer {
             bgppeeras,
             flt_rd,
             bgpsessionparams: Arc::new(std::sync::Mutex::new(None)),
+            caps,
         })
     }
     pub fn set_session_params(&self, params: BgpSessionParams) {
         *(self.bgpsessionparams.lock().unwrap()) = Some(params);
     }
-    pub fn def_caps(asn: u32) -> Vec<BgpCapability> {
+    pub fn all_caps(asn: u32) -> Vec<BgpCapability> {
         vec![
             BgpCapability::SafiIPv4u,
             BgpCapability::SafiIPv4fu,
@@ -227,6 +293,16 @@ impl ProtoPeer {
             ]),
         ]
     }
+    pub fn def_caps(&self, asn: u32) -> Vec<BgpCapability> {
+        let mut ret = Vec::new();
+        for c in self.caps.iter() {
+            match c {
+                BgpCapability::CapASN32(_) => ret.push(BgpCapability::CapASN32(asn)),
+                x => ret.push(x.clone()),
+            }
+        }
+        ret
+    }
     pub fn get_session_params(&self) -> BgpSessionParams {
         let mut lck = self.bgpsessionparams.lock().unwrap();
         if let Some(p) = lck.as_ref() {
@@ -244,7 +320,7 @@ impl ProtoPeer {
             180,
             peeraddrmode,
             self.routerid,
-            Self::def_caps(self.bgppeeras),
+            self.def_caps(self.bgppeeras),
         );
         *lck = Some(pbsp.clone());
         pbsp

@@ -287,7 +287,7 @@ impl BgpSvr {
                                 BgpTransportMode::IPv6
                             },
                             fpeer.routerid,
-                            ProtoPeer::def_caps(fpeer.bgppeeras),
+                            ProtoPeer::all_caps(fpeer.bgppeeras),
                         ),
                         client.0,
                         &*self,

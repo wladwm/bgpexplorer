@@ -91,11 +91,11 @@ Main section parameters:
 
 Service section parameters:
 * mode - protocol mode, can be bgpactive,bgppassive,bmpactive or bmppassive. bgp or bmp means protocol, active or passive determines which side will initiate session.
-* bgppeer - bgp peer address for bgp active mode. Can be just IP address or IP:port. bgpexplorer will attempt to connect to specified BGP speaker.
-* bmppeer - bmp peer address for bgp active mode. Can be IP:port or just IP address - then default port 632 will be used. bgpexplorer will attempt to connect to specified BMP-capable router.
+* peer - bgp/bmp peer address for active mode. Can be just IP address or IP:port. bgpexplorer will attempt to connect to specified BGP speaker. Default port is 179 for BGP and 632 for BMP.
 * protolisten - TCP endpoint for bgp/bmp passived mode. Should be IP:port form. Please note that you will not be able to run process listening port number below 1024 in *nix OS if you are not root without special tricks.
 * routerid - BGP router ID, if not specified, default value 1.1.1.1 will be used.
 * peeras - BGP AS number for bgpactive.
+* caps - comma-separated list capabilities to advertise. May be "min" for minimal set, "all" for maximum set, and set of specific values: ipv4u,ipv4lu,vpnv4u,vpnv4m,ipv4mdt,mvpn,vpls,evpn,asn32,ipv6u,ipv6lu,vpnv6u,vpnv6m,ipv6mdt,addpath
 * filter_rd - With BMP session this parametr will filter watching BGP session matching this RD. Default is 0:0 (global vrf).
 
 BTW, builtin whois proxy allows you to see some info about AS and hosts:
