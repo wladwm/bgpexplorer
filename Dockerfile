@@ -3,9 +3,7 @@ WORKDIR /usr/src/bgpexplorer
 COPY . .
 RUN cargo build --release
 
-FROM debian:buster-slim
-#RUN apt-get update && rm -rf /var/lib/apt/lists/*
-RUN rm -rf /var/lib/apt/lists/*
+FROM debian:bookworm-slim
 RUN mkdir -p /usr/bgpexplorer/contrib
 COPY --from=builder /usr/src/bgpexplorer/contrib/* /usr/bgpexplorer/contrib/
 COPY --from=builder /usr/src/bgpexplorer/target/release/bgpexplorer /usr/src/bgpexplorer/bgpexplorer.ini /usr/src/bgpexplorer/whois.json /usr/bgpexplorer/
