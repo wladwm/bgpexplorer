@@ -19,7 +19,10 @@ pub fn get_url_param<T: std::str::FromStr>(
     match hashmap.get(&keyname.to_string()) {
         None => None,
         Some(vs) => match vs.parse::<T>() {
-            Err(_) => None,
+            Err(_) => {
+                error!("Unable to parse papameter {}={}", keyname, vs);
+                None
+            }
             Ok(n) => Some(n),
         },
     }

@@ -499,13 +499,11 @@ impl<'a, 'b> BAHItems<'a, 'b> {
         BAHItems { bah, params }
     }
     pub fn is_empty(&self) -> bool {
-        !self.bah.items.iter().any(|x| {
-            if self.params.onlyactive {
-                x.1.active
-            } else {
-                true
-            }
-        })
+        !self
+            .bah
+            .items
+            .iter()
+            .any(|x| self.params.filter.filter_ah(x.0, x.1))
     }
 }
 impl<'a, 'b> serde::Serialize for BAHItems<'a, 'b> {
@@ -520,15 +518,9 @@ impl<'a, 'b> serde::Serialize for BAHItems<'a, 'b> {
             .items
             .iter()
             .rev()
-            .filter(|x| {
-                if self.params.onlyactive {
-                    x.1.active
-                } else {
-                    true
-                }
-            })
-            .take(if self.params.maxdepth > 0 {
-                self.params.maxdepth
+            .filter(|x| self.params.filter.filter_ah(x.0, x.1))
+            .take(if self.params.filter.maxdepth > 0 {
+                self.params.filter.maxdepth
             } else {
                 self.bah.items.len()
             })
@@ -615,7 +607,7 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> Rib
         } else {
             //self.hashmap.iter().filter(|p|{!(self.filter.match_route(p.0, p.1) != ribfilter::FilterItemMatchResult::Yes)}).count()
             self.filter
-                .iter_nets(self.ribsafi, self.params.maxdepth, self.params.onlyactive)
+                .iter_nets(self.ribsafi, self.params.filter.clone())
                 .count()
         }
     }
@@ -632,7 +624,7 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
         let mut cnt: usize = 0;
         for (k, v) in self
             .filter
-            .iter_nets(self.ribsafi, self.params.maxdepth, self.params.onlyactive)
+            .iter_nets(self.ribsafi, self.params.filter.clone())
             .skip(self.params.skip)
             .take(self.params.limit)
         {
@@ -645,11 +637,9 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
         }
         if cnt < 1 {
             for (k, v) in ribfilter::SortIter::new(
-                &mut self.filter.iter_super_nets(
-                    self.ribsafi,
-                    self.params.maxdepth,
-                    self.params.onlyactive,
-                ),
+                &mut self
+                    .filter
+                    .iter_super_nets(self.ribsafi, self.params.filter.clone()),
                 &|a, b| {
                     let alen = a.0.len();
                     let blen = b.0.len();
@@ -706,8 +696,10 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
         state.serialize_field("length", &self.length)?;
         state.serialize_field("skip", &self.params.skip)?;
         state.serialize_field("limit", &self.params.limit)?;
-        state.serialize_field("maxdepth", &self.params.maxdepth)?;
-        state.serialize_field("onlyactive", &self.params.onlyactive)?;
+        state.serialize_field("maxdepth", &self.params.filter.maxdepth)?;
+        state.serialize_field("onlyactive", &self.params.filter.onlyactive)?;
+        state.serialize_field("changed_after", &self.params.filter.changed_after)?;
+        state.serialize_field("changed_before", &self.params.filter.changed_before)?;
         state.serialize_field("found", &self.items.count())?;
         state.serialize_field("items", &self.items)?;
         state.end()

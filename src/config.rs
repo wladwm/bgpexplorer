@@ -333,6 +333,7 @@ pub struct SvcConfig {
     pub httproot: String,
     pub historydepth: usize,
     pub httptimeout: u64,
+    pub timeidx_granularity: u64,
     pub historymode: HistoryChangeMode,
     pub whoisconfig: WhoIs,
     pub whoisdb: String,
@@ -481,6 +482,26 @@ impl SvcConfig {
             ))
         } else {
             None
+        };
+        let timeidx_granularity = if mainsection.contains_key("timeidx_granularity") {
+            match mainsection["timeidx_granularity"] {
+                None => {
+                    return Err(ErrorConfig::from_str(
+                        "invalid timeidx_granularity was specified",
+                    ));
+                }
+                Some(ref s) => match s.parse() {
+                    Err(e) => {
+                        return Err(ErrorConfig::from_string(format!(
+                            "Invalid timeidx_granularity - {}",
+                            e
+                        )));
+                    }
+                    Ok(a) => a,
+                },
+            }
+        } else {
+            86400u64
         };
         let historydepth: usize = if mainsection.contains_key("historydepth") {
             match mainsection["historydepth"] {
@@ -632,6 +653,7 @@ impl SvcConfig {
             peers,
             snapshot_file,
             snapshot_every,
+            timeidx_granularity,
         })
     }
 }

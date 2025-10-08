@@ -2,6 +2,7 @@ use crate::bgpattrs::*;
 use crate::bgpsvc::BgpSessionId;
 use crate::config::*;
 use crate::ribfilter::RouteFilter;
+use crate::ribservice::RibResponseFilter;
 use crate::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -426,30 +427,36 @@ impl BgpSessionEntry {
 pub struct BgpRIBSafi<T: BgpRIBKey> {
     pub log_size: usize,
     pub history_mode: HistoryChangeMode,
+    pub timeidx_granularity: u64,
     pub items: BTreeMap<T, BgpSessionEntry>,
     pub idx_aspath: BgpRIBIndex<BgpAS, T>,
     pub idx_community: BgpRIBIndex<BgpCommunity, T>,
     pub idx_extcommunity: BgpRIBIndex<BgpExtCommunity, T>,
+    pub idx_changed: BgpRIBIndex<Timestamp, T>,
 }
 impl<T: BgpRIBKey> BgpRIBSafi<T> {
     pub fn new(logsize: usize, historymode: HistoryChangeMode) -> BgpRIBSafi<T> {
         BgpRIBSafi {
             log_size: logsize,
             history_mode: historymode,
+            timeidx_granularity: 86400,
             items: BTreeMap::new(),
             idx_aspath: BgpRIBIndex::new(),
             idx_community: BgpRIBIndex::new(),
             idx_extcommunity: BgpRIBIndex::new(),
+            idx_changed: BgpRIBIndex::new(),
         }
     }
     pub fn from_config(cfg: &SvcConfig) -> BgpRIBSafi<T> {
         BgpRIBSafi {
             log_size: cfg.historydepth,
             history_mode: cfg.historymode.clone(),
+            timeidx_granularity: cfg.timeidx_granularity,
             items: BTreeMap::new(),
             idx_aspath: BgpRIBIndex::new(),
             idx_community: BgpRIBIndex::new(),
             idx_extcommunity: BgpRIBIndex::new(),
+            idx_changed: BgpRIBIndex::new(),
         }
     }
     pub fn clear(&mut self) {
@@ -466,11 +473,22 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
         for (i, sess) in self.items.iter() {
             for (_, sess_ent) in sess.items.iter() {
                 for (_, p_ent) in sess_ent.items.iter() {
-                    for (_, rattre) in p_ent.items.iter() {
+                    for (chgd, rattre) in p_ent.items.iter() {
                         let rattr = &rattre.attrs;
                         //self.upd_idx(i,&rattre.attrs);
                         for aspathitem in rattr.aspath.value.iter() {
-                            self.idx_aspath.set(aspathitem, i);
+                            match aspathitem {
+                                BgpASitem::Seq(v) => {
+                                    for pi in v.value.iter() {
+                                        self.idx_aspath.set(pi, i);
+                                    }
+                                }
+                                BgpASitem::Set(v) => {
+                                    for pi in v.value.iter() {
+                                        self.idx_aspath.set(pi, i);
+                                    }
+                                }
+                            }
                         }
                         for cmn in rattr.comms.value.iter() {
                             self.idx_community.set(cmn, i);
@@ -481,6 +499,8 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                                 self.idx_extcommunity.set(cmn, i);
                             }
                         }
+                        let ch_idx = chgd.cut_millis(self.timeidx_granularity * 1000);
+                        self.idx_changed.set(&ch_idx, i);
                     }
                 }
             }
@@ -490,6 +510,7 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
     pub fn get_iter<'b>(
         &'b self,
         filter: &RouteFilter,
+        ribflt: Option<&RibResponseFilter>,
     ) -> ClonableIterator<'b, &'b T, &'b BgpSessionEntry> {
         let mut ret: ClonableIterator<'b, &'b T, &'b BgpSessionEntry> =
             clone_iter!(self.items.iter()); //ClonableIterator::new(Rc::new(self.items.iter()));
@@ -513,6 +534,50 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
             } else {
                 return clone_iter!(EmptyIter::new());
             };
+        }
+        if let Some(rf) = ribflt {
+            match (rf.changed_after.as_ref(), rf.changed_before.as_ref()) {
+                (Some(tf), Some(tt)) => {
+                    if let Some(f1) = self
+                        .idx_changed
+                        .idx
+                        .range(
+                            &tf.cut_millis(self.timeidx_granularity * 1000)
+                                ..&tt.cut_millis(self.timeidx_granularity * 1000),
+                        )
+                        .next()
+                    {
+                        ret = clone_iter!(MapFilter::new(ret, f1.1));
+                    } else {
+                        return clone_iter!(EmptyIter::new());
+                    };
+                }
+                (Some(tf), None) => {
+                    if let Some(f1) = self
+                        .idx_changed
+                        .idx
+                        .range(&tf.cut_millis(self.timeidx_granularity * 1000)..)
+                        .next()
+                    {
+                        ret = clone_iter!(MapFilter::new(ret, f1.1));
+                    } else {
+                        return clone_iter!(EmptyIter::new());
+                    };
+                }
+                (None, Some(tt)) => {
+                    if let Some(f1) = self
+                        .idx_changed
+                        .idx
+                        .range(..&tt.cut_millis(self.timeidx_granularity * 1000))
+                        .next()
+                    {
+                        ret = clone_iter!(MapFilter::new(ret, f1.1));
+                    } else {
+                        return clone_iter!(EmptyIter::new());
+                    };
+                }
+                _ => {}
+            }
         }
         ret
     }
@@ -562,7 +627,18 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
         let now = Timestamp::now();
         for i in v.iter() {
             for aspathitem in rattr.aspath.value.iter() {
-                self.idx_aspath.set(aspathitem, i);
+                match aspathitem {
+                    BgpASitem::Seq(v) => {
+                        for pi in v.value.iter() {
+                            self.idx_aspath.set(pi, i);
+                        }
+                    }
+                    BgpASitem::Set(v) => {
+                        for pi in v.value.iter() {
+                            self.idx_aspath.set(pi, i);
+                        }
+                    }
+                }
             }
             for cmn in rattr.comms.value.iter() {
                 self.idx_community.set(cmn, i);
@@ -573,6 +649,8 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                     self.idx_extcommunity.set(cmn, i);
                 }
             }
+            let cnow = now.cut_millis(self.timeidx_granularity * 1000);
+            self.idx_changed.set(&cnow, i);
             let histrec = BgpAttrEntry::new(true, rattr.clone(), i.getlabels());
             match self.items.get_mut(i) {
                 None => {
@@ -657,7 +735,18 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
         }
         for i in v.iter() {
             for aspathitem in rattr.aspath.value.iter() {
-                self.idx_aspath.set(aspathitem, &i.nlri);
+                match aspathitem {
+                    BgpASitem::Seq(v) => {
+                        for pi in v.value.iter() {
+                            self.idx_aspath.set(pi, &i.nlri);
+                        }
+                    }
+                    BgpASitem::Set(v) => {
+                        for pi in v.value.iter() {
+                            self.idx_aspath.set(pi, &i.nlri);
+                        }
+                    }
+                }
             }
             for cmn in rattr.comms.value.iter() {
                 self.idx_community.set(cmn, &i.nlri);
@@ -670,6 +759,8 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
             }
             let histrec = BgpAttrEntry::new(true, rattr.clone(), i.nlri.getlabels());
             let now = Timestamp::now();
+            let cnow = now.cut_millis(self.timeidx_granularity * 1000);
+            self.idx_changed.set(&cnow, &i.nlri);
             match self.items.get_mut(&i.nlri) {
                 None => {
                     let mut hist = BgpSessionEntry::new();

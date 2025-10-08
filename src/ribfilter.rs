@@ -1,6 +1,7 @@
 use crate::bgpattrs::BgpAttrs;
 use crate::bgprib::{BgpRIBKey, BgpRIBSafi, BgpSessionEntry, ClonableIterator};
 use crate::clone_iter;
+use crate::ribservice::RibResponseFilter;
 use crate::service::*;
 use regex::Regex;
 use std::collections::BTreeSet;
@@ -13,7 +14,7 @@ pub struct SortIter<T> {
 }
 impl<T> SortIter<T> {
     pub fn new(
-        srciter: &mut (dyn std::iter::Iterator<Item = T>),
+        srciter: &mut dyn std::iter::Iterator<Item = T>,
         fnc: &dyn Fn(&T, &T) -> std::cmp::Ordering,
     ) -> SortIter<T> {
         let mut v = Vec::<T>::new();
@@ -548,16 +549,11 @@ pub struct RouteFilter {
 #[derive(Clone)]
 pub struct RouteFilterParams<'a> {
     pub filter: &'a RouteFilter,
-    pub maxdepth: usize,
-    pub onlyactive: bool,
+    pub respflt: RibResponseFilter,
 }
 impl<'a> RouteFilterParams<'a> {
-    pub fn new(filter: &'a RouteFilter, maxdepth: usize, onlyactive: bool) -> RouteFilterParams {
-        RouteFilterParams {
-            filter,
-            maxdepth,
-            onlyactive,
-        }
+    pub fn new(filter: &'a RouteFilter, respflt: RibResponseFilter) -> RouteFilterParams<'a> {
+        RouteFilterParams { filter, respflt }
     }
 }
 pub struct RouteFilterSubnets<'a, 'b, T: FilterMatchRoute + BgpRIBKey> {
@@ -567,14 +563,13 @@ pub struct RouteFilterSubnets<'a, 'b, T: FilterMatchRoute + BgpRIBKey> {
 impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSubnets<'a, 'b, T> {
     pub fn new(
         filter: &'a RouteFilter,
-        maxdepth: usize,
-        onlyactive: bool,
+        respflt: RibResponseFilter,
         srcafi: &'b BgpRIBSafi<T>,
     ) -> RouteFilterSubnets<'a, 'b, T> {
         Self {
-            filter: RouteFilterParams::new(filter, maxdepth, onlyactive),
+            filter: RouteFilterParams::new(filter, respflt.clone()),
             srcitr: match filter.find_least_subnet() {
-                None => srcafi.get_iter(filter),
+                None => srcafi.get_iter(filter, Some(&respflt)),
                 Some(fnet) => match fnet.get_subnet_range::<T>() {
                     None => clone_iter!(srcafi.items.iter()),
                     Some(rng) => clone_iter!(srcafi.items.range(rng)),
@@ -593,27 +588,26 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
                 None => break,
                 Some(q) => {
                     if q.1.items.iter().any(|ssitr| {
-                        ssitr.1.items.iter().any(|pitr| {
-                            pitr.1
-                                .items
-                                .iter()
-                                .filter(|hr| {
-                                    if self.filter.onlyactive {
-                                        hr.1.active
+                        ssitr
+                            .1
+                            .items
+                            .iter()
+                            .filter(|x| self.filter.respflt.filter_path_e(x.1))
+                            .any(|pitr| {
+                                pitr.1
+                                    .items
+                                    .iter()
+                                    .filter(|hr| self.filter.respflt.filter_ah(hr.0, hr.1))
+                                    .skip(if pitr.1.items.len() > self.filter.respflt.maxdepth {
+                                        pitr.1.items.len() - self.filter.respflt.maxdepth
                                     } else {
-                                        true
-                                    }
-                                })
-                                .skip(if pitr.1.items.len() > self.filter.maxdepth {
-                                    pitr.1.items.len() - self.filter.maxdepth
-                                } else {
-                                    0
-                                })
-                                .any(|histitem| {
-                                    self.filter.filter.match_route(q.0, &histitem.1.attrs)
-                                        == FilterItemMatchResult::Yes
-                                })
-                        })
+                                        0
+                                    })
+                                    .any(|histitem| {
+                                        self.filter.filter.match_route(q.0, &histitem.1.attrs)
+                                            == FilterItemMatchResult::Yes
+                                    })
+                            })
                     }) {
                         return Some(q);
                     }
@@ -630,15 +624,14 @@ pub struct RouteFilterSupernets<'a, 'b, T: FilterMatchRoute + BgpRIBKey> {
 impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> RouteFilterSupernets<'a, 'b, T> {
     pub fn new(
         filter: &'a RouteFilter,
-        maxdepth: usize,
-        onlyactive: bool,
+        respflt: RibResponseFilter,
         srcafi: &'b BgpRIBSafi<T>,
     ) -> RouteFilterSupernets<'a, 'b, T> {
         RouteFilterSupernets {
-            filter: RouteFilterParams::new(filter,maxdepth,onlyactive),
+            filter: RouteFilterParams::new(filter,respflt.clone()),
             srcitr: //srcafi.items.iter(),
             match filter.find_least_subnet() {
-                None => srcafi.get_iter(filter),
+                None => srcafi.get_iter(filter,Some(&respflt)),
                 Some(fnet) => {
                     match fnet.get_supernet_range::<T>() {
                         None => clone_iter!(srcafi.items.iter()),
@@ -659,27 +652,26 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
                 None => break,
                 Some(q) => {
                     if q.1.items.iter().any(|ssitr| {
-                        ssitr.1.items.iter().any(|pitr| {
-                            pitr.1
-                                .items
-                                .iter()
-                                .filter(|hr| {
-                                    if self.filter.onlyactive {
-                                        hr.1.active
+                        ssitr
+                            .1
+                            .items
+                            .iter()
+                            .filter(|pitr| self.filter.respflt.filter_path_e(pitr.1))
+                            .any(|pitr| {
+                                pitr.1
+                                    .items
+                                    .iter()
+                                    .filter(|hr| self.filter.respflt.filter_ah(hr.0, hr.1))
+                                    .skip(if pitr.1.items.len() > self.filter.respflt.maxdepth {
+                                        pitr.1.items.len() - self.filter.respflt.maxdepth
                                     } else {
-                                        true
-                                    }
-                                })
-                                .skip(if pitr.1.items.len() > self.filter.maxdepth {
-                                    pitr.1.items.len() - self.filter.maxdepth
-                                } else {
-                                    0
-                                })
-                                .any(|histitem| {
-                                    self.filter.filter.match_super_route(q.0, &histitem.1.attrs)
-                                        == FilterItemMatchResult::Yes
-                                })
-                        })
+                                        0
+                                    })
+                                    .any(|histitem| {
+                                        self.filter.filter.match_super_route(q.0, &histitem.1.attrs)
+                                            == FilterItemMatchResult::Yes
+                                    })
+                            })
                     }) {
                         return Some(q);
                     }
@@ -713,27 +705,24 @@ impl RouteFilter {
     pub fn iter_nets<'a, T: FilterMatchRoute + BgpRIBKey>(
         &'a self,
         safi: &'a BgpRIBSafi<T>,
-        takemaxdepth: usize,
-        takeonlyactive: bool,
+        respflt: RibResponseFilter,
     ) -> RouteFilterSubnets<'a, 'a, T> {
-        RouteFilterSubnets::new(self, takemaxdepth, takeonlyactive, safi)
+        RouteFilterSubnets::new(self, respflt, safi)
     }
     pub fn iter_super_nets<'a, T: FilterMatchRoute + BgpRIBKey>(
         &'a self,
         safi: &'a BgpRIBSafi<T>,
-        takemaxdepth: usize,
-        takeonlyactive: bool,
+        respflt: RibResponseFilter,
     ) -> RouteFilterSupernets<'a, 'a, T> {
-        RouteFilterSupernets::new(self, takemaxdepth, takeonlyactive, safi)
+        RouteFilterSupernets::new(self, respflt, safi)
     }
     pub fn find_best_supernet<'a, T: FilterMatchRoute + BgpRIBKey>(
         &'a self,
         safi: &'a BgpRIBSafi<T>,
-        takemaxdepth: usize,
-        takeonlyactive: bool,
+        respflt: RibResponseFilter,
     ) -> Option<(&'a T, &'a BgpSessionEntry)> {
         let mut ret: Option<(&'a T, &'a BgpSessionEntry)> = None;
-        for q in RouteFilterSupernets::new(self, takemaxdepth, takeonlyactive, safi) {
+        for q in RouteFilterSupernets::new(self, respflt, safi) {
             match ret {
                 None => {
                     ret = Some(q);
@@ -874,6 +863,22 @@ impl RouteFilter {
         }
         ret
     }
+    fn insert_all_as(st: &mut BTreeSet<BgpAS>, p: &BgpASpath) {
+        for pi in p.value.iter() {
+            match pi {
+                BgpASitem::Seq(v) => {
+                    for a in v.value.iter() {
+                        st.insert(*a);
+                    }
+                }
+                BgpASitem::Set(v) => {
+                    for a in v.value.iter() {
+                        st.insert(*a);
+                    }
+                }
+            }
+        }
+    }
     pub fn find_aspath_item(&self) -> BTreeSet<BgpAS> {
         let mut ret: BTreeSet<BgpAS> = BTreeSet::new();
         for i in self.terms.iter() {
@@ -882,18 +887,10 @@ impl RouteFilter {
             };
             match &i.item {
                 FilterItem::ASPath(asp) => match asp {
-                    FilterASPath::Contains(p) => p.value.iter().for_each(|x| {
-                        ret.insert(*x);
-                    }),
-                    FilterASPath::StartsWith(p) => p.value.iter().for_each(|x| {
-                        ret.insert(*x);
-                    }),
-                    FilterASPath::EndsWith(p) => p.value.iter().for_each(|x| {
-                        ret.insert(*x);
-                    }),
-                    FilterASPath::FullMatch(p) => p.value.iter().for_each(|x| {
-                        ret.insert(*x);
-                    }),
+                    FilterASPath::Contains(p) => Self::insert_all_as(&mut ret, p),
+                    FilterASPath::StartsWith(p) => Self::insert_all_as(&mut ret, p),
+                    FilterASPath::EndsWith(p) => Self::insert_all_as(&mut ret, p),
+                    FilterASPath::FullMatch(p) => Self::insert_all_as(&mut ret, p),
                     FilterASPath::Empty => {}
                 },
                 _ => {}
@@ -1879,18 +1876,19 @@ mod tests {
         );
         assert_eq!(safi.len(), 3);
         let mut flt = RouteFilter::new();
+        let rflt = RibResponseFilter::new(10, false);
         flt.parse("10.0.0.0/25");
         println!("{:?}", flt.terms);
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 1);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 1);
         flt.terms.clear();
         flt.parse("10.0.0.0/16");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 2);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 2);
         flt.terms.clear();
         flt.parse("11.0.0.0/16");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 1);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 1);
         flt.terms.clear();
         flt.parse("12.0.0.0/16");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 0);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 0);
     }
     #[test]
     fn test_ribfilter_num1() {
@@ -1920,28 +1918,29 @@ mod tests {
         );
         assert_eq!(safi.len(), 4);
         let mut flt = RouteFilter::new();
+        let rflt = RibResponseFilter::new(10, false);
         flt.parse("10.0.0.0/25");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 2);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 2);
         flt.terms.clear();
         flt.parse("10.0.0.0/16");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 3);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 3);
         flt.terms.clear();
         flt.parse("rd:100:1000");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 3);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 3);
         flt.terms.clear();
         flt.parse("rd:100:1000 10.0.0.0/16");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 2);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 2);
         flt.terms.clear();
         flt.parse("100");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 4);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 4);
         flt.terms.clear();
         flt.parse("1001");
         assert_eq!(flt.terms.len(), 1);
         println!("{:?}", flt.terms);
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 1);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 1);
         flt.terms.clear();
         flt.parse("1000");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 3);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 3);
     }
     #[test]
     fn test_ribfilter_re1() {
@@ -1971,11 +1970,12 @@ mod tests {
         );
         assert_eq!(safi.len(), 4);
         let mut flt = RouteFilter::new();
+        let rflt = RibResponseFilter::new(10, false);
         flt.parse("re:10\\.0\\.0");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 3);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 3);
         flt.terms.clear();
         flt.parse("rd:100:1000");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 3);
+        assert_eq!(flt.iter_nets(&safi, rflt.clone()).count(), 3);
     }
     #[test]
     fn test_ribfilter_extrt1() {
@@ -2089,7 +2089,11 @@ mod tests {
         */
         flt.terms.clear();
         flt.parse("rt:400:500 10.0.0.0/24");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 2);
+        assert_eq!(
+            flt.iter_nets(&safi, RibResponseFilter::new(10, false))
+                .count(),
+            2
+        );
     }
     #[test]
     fn test_ribfilter_range1() {
@@ -2128,7 +2132,11 @@ mod tests {
         assert_eq!(safi.len(), 5);
         let mut flt = RouteFilter::new();
         flt.parse("10.0.0.0/24");
-        assert_eq!(flt.iter_nets(&safi, 10, false).count(), 4);
+        assert_eq!(
+            flt.iter_nets(&safi, RibResponseFilter::new(10, false))
+                .count(),
+            4
+        );
         for (ref key, ref _value) in safi.items.range(
             &BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 0, 0), 24)
                 ..&BgpAddrV4::new(std::net::Ipv4Addr::new(10, 0, 1, 0), 24),
@@ -2182,7 +2190,7 @@ mod tests {
         assert_eq!(safi.len(), 5);
         let mut flt = RouteFilter::new();
         flt.parse("10.0.0.0/24");
-        for (ref key, ref _value) in flt.iter_nets(&safi, 10, false) {
+        for (ref key, ref _value) in flt.iter_nets(&safi, RibResponseFilter::new(10, false)) {
             eprintln!("{}", key);
         }
     }
@@ -2273,27 +2281,28 @@ mod tests {
             Arc::new(attrs1),
         );
         assert_eq!(safi.len(), 8);
+        let rflt = RibResponseFilter::new(10, false);
         assert_eq!(
             RouteFilter::fromstr("10.0.0.0/24")
-                .iter_nets(&safi, 10, false)
+                .iter_nets(&safi, rflt.clone())
                 .count(),
             6
         );
         assert_eq!(
             RouteFilter::fromstr("rd:1:4")
-                .iter_nets(&safi, 10, false)
+                .iter_nets(&safi, rflt.clone())
                 .count(),
             2
         );
         assert_eq!(
             RouteFilter::fromstr("rd:1:1")
-                .iter_nets(&safi, 10, false)
+                .iter_nets(&safi, rflt.clone())
                 .count(),
             2
         );
         assert_eq!(
             RouteFilter::fromstr("10.0.0.1")
-                .iter_nets(&safi, 10, false)
+                .iter_nets(&safi, rflt.clone())
                 .count(),
             2
         );

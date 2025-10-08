@@ -10,6 +10,15 @@ impl Timestamp {
     pub fn timestamp_millis(&self) -> i64 {
         self.0.timestamp_millis()
     }
+    pub fn cut_millis(&self, s: u64) -> Timestamp {
+        let mut m = self.0.timestamp_millis();
+        m -= m % (s as i64);
+        match Local.timestamp_millis_opt(m) {
+            LocalResult::Single(dt) => Timestamp(dt.into()),
+            LocalResult::Ambiguous(t1, _) => Timestamp(t1.into()),
+            _ => return *self,
+        }
+    }
 }
 impl std::fmt::Display for Timestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -30,6 +39,20 @@ impl std::ops::Deref for Timestamp {
     type Target = DateTime<Local>;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+impl std::str::FromStr for Timestamp {
+    type Err = chrono::format::ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(ts) = s.parse() {
+            match Local.timestamp_millis_opt(ts) {
+                LocalResult::Single(dt) => return Ok(dt.into()),
+                LocalResult::Ambiguous(t1, _) => return Ok(t1.into()),
+                LocalResult::None => return Ok(Timestamp(Local::now())),
+            }
+        }
+        Ok(Timestamp(DateTime::parse_from_rfc3339(s)?.into()))
     }
 }
 impl serde::Serialize for Timestamp {

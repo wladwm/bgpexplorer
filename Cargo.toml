@@ -1,8 +1,8 @@
 [package]
 name = "bgpexplorer"
-version = "0.3.4"
+version = "0.3.5"
 authors = ["Vladimir Melnikov <wlad.w.m@gmail.com>"]
-edition = "2018"
+edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/wladwm/bgpexplorer"
 keywords = ["BGP","monitoring"]
@@ -13,28 +13,29 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-zettabgp = { version = "0.3.4", features = ["serde"] }
-tokio = { version = "1.24.1", features = ["full"] }
-tokio-util = { version = "0.7.4", features = ["full"] }
+zettabgp = { version = "0.3.6", features = ["serde"] }
+tokio = { version = "1.40.0", features = ["full"] }
+tokio-util = { version = "0.7.12", features = ["full"] }
 hyper = { version = "0.14.27", features = ["full"] }
 websocket-codec = "0.5.2"
-futures = "0.3.25"
-futures-util = "0.3.25"
-chrono = "0.4.23"
+futures = "0.3.30"
+futures-util = "0.3.30"
+chrono = "0.4.38"
 ini = { version = "1.3.0"}
-async-trait = "0.1.61"
+async-trait = "0.1.82"
 html-escape = "0.2.13"
-serde = { version = "1.0.152", features = ["derive"] }
-serde_json = "1.0.91"
-lazy_static = "1.4.0"
-regex = "1.7.1"
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
+lazy_static = "1.5.0"
+regex = "1.10.6"
 url = "2.3.1"
 sled = "0.34.7"
-dnssector = { version="0.2.12" }
-whois-rust =  { version = "1.5.1", features= ["tokio"]  }
-ciborium = { version = "0.2.0" }
-ciborium-io = "0.2.0"
-log = "0.4.17"
+dnssector = { version="0.2.13" }
+whois-rust =  { version = "1.6.0", features= ["tokio"]  }
+ciborium = { version = "0.2.2" }
+ciborium-io = "0.2.2"
+log = "0.4.22"
 pretty_env_logger = "0.5.0"
+
 
 

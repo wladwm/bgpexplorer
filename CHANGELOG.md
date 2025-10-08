@@ -1,3 +1,7 @@
+### 0.3.5 (2025-10-08)
+* fixed aspath with as_set
+* added filtering for time change
+
 ### 0.3.4 (2023-12-18)
 
 #### Features

@@ -1,5 +1,6 @@
 use crate::bgprib::*;
 use crate::service::*;
+use crate::timestamp::Timestamp;
 use crate::*;
 use chrono::prelude::*;
 use futures::executor::block_on;
@@ -11,20 +12,94 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use zettabgp::prelude::*;
 
+const HTTP_CONTENT_TYPE: &'static str = "Content-Type";
+const HTTP_CT_TEXT_PLAIN: &'static str = "text/plain";
+const HTTP_CT_TEXT_JSON: &'static str = "text/json";
+
+#[derive(Clone)]
+pub struct RibResponseFilter {
+    pub maxdepth: usize,
+    pub onlyactive: bool,
+    pub changed_before: Option<Timestamp>,
+    pub changed_after: Option<Timestamp>,
+}
+impl RibResponseFilter {
+    pub fn new(maxdepth: usize, onlyactive: bool) -> RibResponseFilter {
+        RibResponseFilter {
+            maxdepth,
+            onlyactive,
+            changed_before: None,
+            changed_after: None,
+        }
+    }
+    pub fn extract_params(&mut self, hashmap: &HashMap<String, String>) {
+        if let Some(n) = get_url_param(hashmap, "maxdepth") {
+            self.maxdepth = n;
+        };
+        if let Some(n) = get_url_param(hashmap, "onlyactive") {
+            self.onlyactive = n;
+        };
+        if let Some(n) = get_url_param(hashmap, "changed_before") {
+            self.changed_before = Some(n);
+        };
+        if let Some(n) = get_url_param(hashmap, "changed_after") {
+            self.changed_after = Some(n);
+        };
+    }
+    pub fn filter_path_e(&self, bp: &BgpAttrHistory) -> bool {
+        if let Some(cb) = self.changed_before.as_ref() {
+            if bp
+                .items
+                .range(..*cb)
+                .find(|(ts, ba)| self.filter_ah(ts, ba))
+                .is_none()
+            {
+                return false;
+            }
+        }
+        if let Some(ca) = self.changed_after.as_ref() {
+            if bp
+                .items
+                .range(*ca..)
+                .find(|(ts, ba)| self.filter_ah(ts, ba))
+                .is_none()
+            {
+                return false;
+            }
+        }
+        true
+    }
+    pub fn filter_ah(&self, ts: &Timestamp, ba: &crate::bgpattrs::BgpAttrEntry) -> bool {
+        if self.onlyactive {
+            if !ba.active {
+                return false;
+            }
+        }
+        if let Some(cb) = self.changed_before.as_ref() {
+            if ts >= cb {
+                return false;
+            }
+        }
+        if let Some(ca) = self.changed_after.as_ref() {
+            if ts <= ca {
+                return false;
+            }
+        }
+        true
+    }
+}
 #[derive(Clone)]
 pub struct RibResponseParams {
     pub skip: usize,
     pub limit: usize,
-    pub maxdepth: usize,
-    pub onlyactive: bool,
+    pub filter: RibResponseFilter,
 }
 impl RibResponseParams {
     pub fn new(skip: usize, limit: usize, maxdepth: usize, onlyactive: bool) -> RibResponseParams {
         RibResponseParams {
             skip,
             limit,
-            maxdepth,
-            onlyactive,
+            filter: RibResponseFilter::new(maxdepth, onlyactive),
         }
     }
     pub fn extract_params(&mut self, hashmap: &HashMap<String, String>) {
@@ -34,12 +109,7 @@ impl RibResponseParams {
         if let Some(n) = get_url_param(hashmap, "limit") {
             self.limit = n;
         };
-        if let Some(n) = get_url_param(hashmap, "maxdepth") {
-            self.maxdepth = n;
-        };
-        if let Some(n) = get_url_param(hashmap, "onlyactive") {
-            self.onlyactive = n;
-        };
+        self.filter.extract_params(hashmap);
     }
 }
 
@@ -101,7 +171,7 @@ impl BgpRIBts {
             Err(_) => {
                 return Response::builder()
                     .status(StatusCode::from_u16(408).unwrap())
-                    .header("Content-type", "text/plain")
+                    .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_PLAIN)
                     .body("Operation timed out".into());
             }
         };
@@ -139,11 +209,11 @@ impl BgpRIBts {
         match serde_json::to_vec(&rsp) {
             Ok(v) => Response::builder()
                 .status(StatusCode::OK)
-                .header("Content-type", "text/json")
+                .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_JSON)
                 .body(v.into()),
             Err(e) => Response::builder()
                 .status(StatusCode::from_u16(500).unwrap())
-                .header("Content-type", "text/plain")
+                .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_PLAIN)
                 .body(format!("Error: {:?}", e).into()),
         }
     }
@@ -158,11 +228,11 @@ impl BgpRIBts {
         match serde_json::to_vec(&rsp) {
             Ok(v) => Response::builder()
                 .status(StatusCode::OK)
-                .header("Content-type", "text/json")
+                .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_JSON)
                 .body(v.into()),
             Err(e) => Response::builder()
                 .status(StatusCode::from_u16(500).unwrap())
-                .header("Content-type", "text/plain")
+                .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_PLAIN)
                 .body(format!("Error: {:?}", e).into()),
         }
     }
@@ -176,7 +246,7 @@ impl BgpRIBts {
             Err(_) => {
                 return Response::builder()
                     .status(StatusCode::from_u16(408).unwrap())
-                    .header("Content-type", "text/plain")
+                    .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_PLAIN)
                     .body("Operation timed out".into());
             }
         };

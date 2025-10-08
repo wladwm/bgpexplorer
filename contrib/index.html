@@ -195,6 +195,14 @@
     function escapeASN(asn) {
       return "<bgp-as val='" + asn + "'></bgp-as>";
     }
+    function escapeASitem(itm) {
+      if ("Seq" in itm){
+        return itm["Seq"].map(escapeASN).join(" ");
+      }
+      if ("Set" in itm){
+        return "{"+itm["Set"].map(escapeASN).join(" ")+"}";
+      }
+    }
     function textPeer(peer) {
       return peer["addr"] + ' AS' + peer["as_num"];
     }
@@ -215,7 +223,7 @@
       };
       rtxt += divc + divo;
       if ("Aspath" in attr) {
-        rtxt += "AS path: " + attr["Aspath"].map(escapeASN).join(" ");
+        rtxt += "AS path: " + attr["Aspath"].map(escapeASitem).join(" ");
       };
       if ("Origin" in attr) {
         rtxt += " " + attr["Origin"];
@@ -323,6 +331,7 @@
         result = JSON.parse(rtext);
         document.getElementById('noroutes').style.display = Object.keys(result).length > 0 ? 'none' : 'block';
       } catch (err) {
+        console.log("on showRoutes ",err);
         rdiv.innerHTML = '';
         document.getElementById('noroutes').style.display = 'block';
         return;
@@ -383,6 +392,10 @@
     function ExecuteQuery() {
       let filterval = document.getElementById('filtertext').value;
       let url = 'api/json/' + active_rib + '?skip=' + skip + '&limit=' + pagesize + '&filter=' + encodeURI(filterval);
+      let chgb=document.getElementById('changedbefore')?.value.trim();
+      if (chgb) url+='&changed_before='+encodeURI(chgb);
+      let chga=document.getElementById('changedafter')?.value.trim();
+      if (chga) url+='&changed_after='+encodeURI(chga);
       queryRib.Query((event) => {
         try {
           hidePopup();
@@ -418,7 +431,7 @@
     function OnRefreshStats() {
       hidePopup();
       if (!("ribs" in server_statistics)) {
-        setTimeout(() => { CheckStat(); }, 1000);
+        setTimeout(() => { CheckStat(); }, 10000);
         return;
       }
       let activeribs = new Array();
@@ -447,7 +460,7 @@
       }
       if (rbs.length < 1) {
         rbs = "No RIBs yet...";
-        setTimeout(() => { CheckStat(); }, 1000);
+        setTimeout(() => { CheckStat(); }, 10000);
       }
       document.getElementById('ribs').innerHTML = server_state+" "+rbs;
       if (!actribfound) {
@@ -484,6 +497,7 @@
           server_statistics = JSON.parse(event.target.responseText);
           if (bgp_sessions) OnRefreshStats();
         } catch (err) {
+          console.log("on queryStatistics.Query ",err);
           queryStatistics.executeQuery();
           return;
         }
@@ -497,6 +511,7 @@
           bgp_sessions = JSON.parse(event.target.responseText);
           if (server_statistics) OnRefreshStats();
         } catch (err) {
+          console.log("querySessions.Query ",err);
           querySessions.executeQuery();
           return;
         }
@@ -509,6 +524,7 @@
         try {
           server_state = event.target.responseText;
         } catch (err) {
+          console.log("queryState.Query ",err);
           queryState.executeQuery();
           return;
         }
@@ -723,6 +739,13 @@
         ExecutePopupQuery('RDNS', 'api/dns/', ipaddr);
       }, 100);
     };
+    function OnShowHideTimeselect(){
+      document.getElementById('chg').style.display=document.getElementById('vchg').checked?'inline':'hidden';
+    }
+    function OnLoad(){
+      OnShowHideTimeselect();
+      CheckStat();
+    }
   </script>
   <style>
     * {
@@ -876,13 +899,14 @@
   </style>
 </head>
 
-<body OnLoad="CheckStat()">
+<body OnLoad="OnLoad()">
   <div id='ribs' class='attr-text'>No RIBs yet...</div>
   <div><input type=text id='filtertext' style='width:90%'
       placeholder='[-]10.0.0.0/8 community:100:1000 as:^100 as:100$ nh:1.1.1.1 rt:100:1000 rd:100:1'
       onkeydown="return oninputkey(event)"><input id="querybtn" type="button" value="&gt;&gt;" OnClick="OnQueryBtn()">
   </div>
   <img id='inprogress' src='wait.svg' border='0' style='display:none;position:fixed;width:32px;height:32px'>
+  <div><input type='checkbox' id="vchg" onchange="OnShowHideTimeselect()"><label for="vchg"> Changed</label> <span id='chg' style="display:none">From: <input type=text id='changedafter' style='width:20%' placeholder="1996-12-19T16:39:57-08:00"> - To:<input type=text id='changedbefore' style='width:20%' placeholder="1996-12-19T16:39:57-08:00"></span></div>
   <div id='noroutes' class='attr-text'>
     <ul>
       <li>Filter terms:
