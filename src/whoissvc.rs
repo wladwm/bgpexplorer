@@ -207,6 +207,7 @@ pub struct WhoisSvr {
     whs: WhoIs,
     dns: Vec<std::net::SocketAddr>,
     req_timeout: std::time::Duration,
+    dnstimeout: std::time::Duration,
     cache_valid: chrono::Duration,
     //cache: RwLock<HashMap<String, WhoisRec>>,
     db: sled::Db,
@@ -218,8 +219,9 @@ impl WhoisSvr {
         WhoisSvr {
             whs: conf.whoisconfig.clone(),
             dns: conf.whoisdnses.clone(),
-            req_timeout: std::time::Duration::from_secs(conf.whoisreqtimeout),
-            cache_valid: chrono::Duration::seconds(conf.whoiscachesecs),
+            req_timeout: conf.whoisreqtimeout.into(),
+            dnstimeout: conf.dnstimeout.into(),
+            cache_valid: chrono::Duration::seconds(conf.whoiscache.dur().as_secs() as i64),
             db: sled::Config::default()
                 .flush_every_ms(Some(10000))
                 .path(conf.whoisdb.clone())
@@ -350,9 +352,8 @@ impl WhoisSvr {
             .await?;
         socket.send(&valid_query).await?;
         let mut response = vec![0; DNS_MAX_COMPRESSED_SIZE];
-        let response_len = socket
-            .recv(&mut response)
-            .await
+        let response_len = tokio::time::timeout(self.dnstimeout.into(), socket.recv(&mut response))
+            .await?
             .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "Timeout"))?;
         response.truncate(response_len);
         let mut parsed_response = DNSSector::new(response)

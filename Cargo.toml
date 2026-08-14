@@ -1,6 +1,6 @@
 [package]
 name = "bgpexplorer"
-version = "0.3.5"
+version = "0.4.0"
 authors = ["Vladimir Melnikov <wlad.w.m@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -12,10 +12,17 @@ readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["whoisreq"]
+clickhouse = ["klickhouse","parking_lot","tokio-stream"]
+mysql = ["mysql_async"]
+whoisreq = ["whois-rust","sled"]
+
 [dependencies]
-zettabgp = { version = "0.3.6", features = ["serde"] }
+zettabgp = { version = "0.4.0", features = ["serde"] }
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-util = { version = "0.7.12", features = ["full"] }
+tokio-stream = { version="0", optional = true }
 hyper = { version = "0.14.27", features = ["full"] }
 websocket-codec = "0.5.2"
 futures = "0.3.30"
@@ -29,13 +36,21 @@ serde_json = "1.0.128"
 lazy_static = "1.5.0"
 regex = "1.10.6"
 url = "2.3.1"
-sled = "0.34.7"
+sled = { version = "0.34.7", optional = true }
 dnssector = { version="0.2.13" }
-whois-rust =  { version = "1.6.0", features= ["tokio"]  }
+whois-rust =  { version = "1.6.0", features= ["tokio"], optional = true  }
 ciborium = { version = "0.2.2" }
 ciborium-io = "0.2.2"
 log = "0.4.22"
 pretty_env_logger = "0.5.0"
+bytes = "1.0.1"
+anyhow = "1.0.102"
+klickhouse = { version = "0.15.2", features=["bb8"], optional = true }
+mysql_async = { version = "0.33", optional = true }
+parking_lot = { version = "0", optional = true }
 
-
+[profile.release]
+opt-level = 3
+strip = true
+lto = true        # Enable link-time optimization
 

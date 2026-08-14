@@ -1,6 +1,8 @@
 use crate::bgppeer::*;
 use crate::bgprib::*;
 use crate::bmppeer::*;
+use crate::ribfilter::RouteFilterSubnets;
+use crate::ribfilter::SortIter;
 use crate::ribservice::*;
 use crate::*;
 use async_trait::async_trait;
@@ -9,10 +11,9 @@ use serde::ser::{SerializeMap, SerializeStruct};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::thread::JoinHandle;
 use std::vec::Vec;
-use tokio::net::TcpSocket;
 use tokio::sync::mpsc::*;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
@@ -24,6 +25,7 @@ pub type BgpSessionId = u16;
 pub trait BgpUpdateHandler {
     async fn handle_update(&self, peerid: BgpSessionId, upd: BgpUpdateMessage);
     async fn register_session(&self, sess: Arc<BgpSessionDesc>) -> BgpSessionId;
+    async fn set_session_state(&self, sessionid: BgpSessionId, state: BgpSessionState);
 }
 #[derive(Hash, PartialEq, Eq, Debug, Clone)]
 pub struct BgpPeerDesc {
@@ -55,19 +57,25 @@ impl PartialOrd for BgpPeerDesc {
         }
     }
 }
-#[derive(Eq, Debug, Clone)]
+#[derive(Debug)]
 pub struct BgpSessionDesc {
     pub peer1: BgpPeerDesc,
     pub peer2: BgpPeerDesc,
+    pub state: std::sync::Mutex<BgpSessionState>,
 }
 impl BgpSessionDesc {
     pub fn new(peer1: BgpPeerDesc, peer2: BgpPeerDesc) -> BgpSessionDesc {
-        BgpSessionDesc { peer1, peer2 }
+        BgpSessionDesc {
+            peer1,
+            peer2,
+            state: std::sync::Mutex::new(BgpSessionState::Idle),
+        }
     }
     pub fn from_bmppeerup(pu: &BmpMessagePeerUp) -> BgpSessionDesc {
         BgpSessionDesc {
             peer1: BgpPeerDesc::new(pu.localaddress, pu.msg1.clone()),
             peer2: BgpPeerDesc::new(pu.peer.peeraddress, pu.msg2.clone()),
+            state: std::sync::Mutex::new(BgpSessionState::BMP),
         }
     }
 }
@@ -121,6 +129,7 @@ impl PartialEq for BgpSessionDesc {
             || (self.peer1.eq(&other.peer2) && self.peer2.eq(&other.peer1))
     }
 }
+impl Eq for BgpSessionDesc {}
 impl Hash for BgpSessionDesc {
     fn hash<H: Hasher>(&self, state: &mut H) {
         if self.peer1 < self.peer2 {
@@ -143,7 +152,7 @@ impl BgpSessionStorage {
             ss_addrs: BTreeMap::new(),
         }
     }
-    fn register_session(&mut self, sess: Arc<BgpSessionDesc>) -> BgpSessionId {
+    fn register_session(&mut self, sess: Arc<BgpSessionDesc>, offer: BgpSessionId) -> BgpSessionId {
         if let Some(x) = self.ss_addrs.get_key_value(&sess) {
             return *x.1;
         }
@@ -151,7 +160,7 @@ impl BgpSessionStorage {
         if let Some(x) = self.ss_addrs.get_key_value(&sessdsc) {
             return *x.1;
         }
-        let mut nid: BgpSessionId = (self.ss_ids.len() + 1) as BgpSessionId;
+        let mut nid: BgpSessionId = offer; //(self.ss_ids.len() + 1) as BgpSessionId;
         while self.ss_ids.get_key_value(&nid).is_some() {
             nid += 1;
         }
@@ -161,21 +170,10 @@ impl BgpSessionStorage {
     }
 }
 
-#[derive(PartialEq, Debug)]
-pub enum BgpSessionState {
-    Idle,
-    Connect,
-    Active,
-    OpenSent,
-    OpenConfirm,
-    Established,
-    BMP,
-}
 pub struct BgpSvr {
     pub config: Arc<SvcConfig>,
     pub cancellation: tokio_util::sync::CancellationToken,
     pub rib: BgpRIBts,
-    pub session_state: std::sync::Mutex<BgpSessionState>,
     sessions: Arc<RwLock<BgpSessionStorage>>,
     upd: Option<Sender<Option<(BgpSessionId, BgpUpdateMessage)>>>,
     updater: Option<JoinHandle<()>>,
@@ -192,17 +190,36 @@ impl BgpUpdateHandler for BgpSvr {
         };
     }
     async fn register_session(&self, sess: Arc<BgpSessionDesc>) -> BgpSessionId {
-        self.sessions.write().await.register_session(sess)
+        let sessid = self.rib.register_session(sess.clone(), 0).await;
+        let ret = self
+            .sessions
+            .write()
+            .await
+            .register_session(sess.clone(), sessid);
+        if sessid == 0 {
+            self.rib.register_session(sess, ret).await;
+        }
+        ret
+    }
+    async fn set_session_state(&self, sessionid: BgpSessionId, state: BgpSessionState) {
+        let glck = self.sessions.read().await;
+        if let Some(sd) = glck.ss_ids.get(&sessionid) {
+            *sd.state.lock().unwrap() = state;
+        }
     }
 }
 impl BgpSvr {
-    pub fn new(cfg: Arc<SvcConfig>, cancel_token: tokio_util::sync::CancellationToken) -> BgpSvr {
+    pub fn new(
+        cfg: Arc<SvcConfig>,
+        storage: Arc<dyn crate::storage::Storage + std::marker::Send + Sync>,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> BgpSvr {
         let rib = match cfg.snapshot_file {
-            None => BgpRIB::new(&cfg),
-            Some(ref s) => match BgpRIB::load_snapshot(&cfg, s) {
+            None => BgpRIB::new(&cfg, storage.clone()),
+            Some(ref s) => match BgpRIB::load_snapshot(&cfg, storage.clone(), s) {
                 Err(e) => {
                     warn!("Error loading snapshot: {}", e);
-                    BgpRIB::new(&cfg)
+                    BgpRIB::new(&cfg, storage.clone())
                 }
                 Ok(o) => o,
             },
@@ -212,7 +229,6 @@ impl BgpSvr {
             cancellation: cancel_token,
             rib: BgpRIBts::new(&cfg, rib),
             sessions: Arc::new(RwLock::new(BgpSessionStorage::new())),
-            session_state: std::sync::Mutex::new(BgpSessionState::Idle),
             upd: None,
             updater: None,
         }
@@ -228,32 +244,26 @@ impl BgpSvr {
         self.upd = Some(tx);
         self.updater = Some(self.rib.run(rx));
     }
-    pub fn set_state(&self, new_state: BgpSessionState) {
-        let mut wg = self.session_state.lock().unwrap();
-        *wg = new_state;
-    }
-    pub async fn run_listen(self: Arc<Self>, sockaddr: SocketAddr) -> io::Result<()> {
-        let socket = if sockaddr.is_ipv4() {
-            TcpSocket::new_v4()?
-        } else {
-            TcpSocket::new_v6()?
-        };
-        socket.bind(sockaddr)?;
-        info!("Listening on {}", sockaddr);
-        self.set_state(BgpSessionState::Idle);
+    pub async fn run_listen(self: Arc<Self>, protopeer: Arc<ProtoPeer>) -> io::Result<()> {
+        let socket = protopeer.make_tcp()?;
+        info!("Listening on {:?}", protopeer);
         let listener = socket.listen(1)?;
         loop {
             let client = match listener.accept().await {
                 Ok(acc) => acc,
                 Err(e) => return Err(e),
             };
-            self.set_state(BgpSessionState::Connect);
             info!("Incoming connected from {}", client.1);
             let fpeer: Arc<ProtoPeer> = match self.config.peers.iter().find(|p| {
                 if p.mode == PeerMode::BgpPassive || p.mode == PeerMode::BmpPassive {
                     if let Some(sa) = p.protolisten {
-                        if sa == sockaddr {
-                            return true;
+                        match protopeer.peer.as_ref() {
+                            None => return true,
+                            Some(sp) => {
+                                if sa.ip() == sp.ip() {
+                                    return true;
+                                }
+                            }
                         }
                     }
                 };
@@ -262,18 +272,16 @@ impl BgpSvr {
                 Some(x) => x.clone(),
                 None => {
                     error!(
-                        "Could not found matching peer for {} @{}",
-                        client.1, sockaddr
+                        "Could not found matching peer for {} @{:?}",
+                        client.1, protopeer
                     );
                     continue;
                 }
             };
             match fpeer.mode {
                 PeerMode::BmpPassive => {
-                    self.set_state(BgpSessionState::BMP);
                     let mut peer = BmpPeer::new(client.0, fpeer, &*self);
                     peer.lifecycle(self.cancellation.clone()).await;
-                    self.set_state(BgpSessionState::Idle);
                     peer.close().await;
                 }
                 PeerMode::BgpPassive => {
@@ -293,17 +301,14 @@ impl BgpSvr {
                         &*self,
                     );
                     let mut scs: bool = true;
-                    self.set_state(BgpSessionState::OpenSent);
                     if let Err(e) = peer.start_passive().await {
                         error!("failed to create BGP peer; err = {:?}", e);
                         scs = false;
                     }
                     if scs {
-                        self.set_state(BgpSessionState::Established);
                         peer.lifecycle(self.cancellation.clone()).await;
                         info!("Session done {}", client.1);
                     };
-                    self.set_state(BgpSessionState::Idle);
                     peer.close().await;
                 }
                 _ => {}
@@ -321,9 +326,8 @@ impl BgpSvr {
             }
             Some(l) => l,
         };
-        self.set_state(BgpSessionState::Connect);
-        info!("Connecting to {}", peeraddr);
-        let peertcp = match tokio::net::TcpStream::connect(peeraddr).await {
+        info!("Connecting to {:?}", fpeer);
+        let peertcp = match fpeer.connect().await {
             Err(e) => {
                 return Err(e);
             }
@@ -333,20 +337,17 @@ impl BgpSvr {
         match fpeer.mode {
             PeerMode::BmpActive => {
                 let mut peer = BmpPeer::new(peertcp, fpeer, &*self);
-                self.set_state(BgpSessionState::BMP);
                 peer.lifecycle(self.cancellation.clone()).await;
                 peer.close().await;
             }
             PeerMode::BgpActive => {
                 let mut peer = BgpPeer::new(fpeer.get_session_params(), peertcp, &*self);
                 let mut scs: bool = true;
-                self.set_state(BgpSessionState::OpenSent);
                 if let Err(e) = peer.start_active().await {
                     fpeer.set_session_params(peer.params.clone());
                     warn!("failed to create BGP peer; err = {:?}", e);
                     scs = false;
                 }
-                self.set_state(BgpSessionState::OpenConfirm);
                 if scs {
                     peer.lifecycle(self.cancellation.clone()).await;
                     info!("Session done {}", peeraddr);
@@ -355,22 +356,20 @@ impl BgpSvr {
             }
             _ => {}
         }
-        self.set_state(BgpSessionState::Idle);
         Ok(())
     }
     pub async fn run(self: Arc<Self>) {
-        let mut lstns: BTreeSet<SocketAddr> = BTreeSet::new();
+        let mut lstns: BTreeSet<Arc<ProtoPeer>> = BTreeSet::new();
         for p in self.config.peers.iter() {
             if p.mode == PeerMode::BgpPassive || p.mode == PeerMode::BmpPassive {
-                if let Some(sa) = p.protolisten {
-                    lstns.insert(sa);
+                if p.protolisten.is_some() {
+                    lstns.insert(p.clone());
                 }
             }
         }
         for sa in lstns.into_iter() {
             let _slf = self.clone();
             tokio::spawn(async move {
-                //slf.run_listen(sa).await;
                 let canceltok = _slf.cancellation.clone();
                 let slf1 = _slf.clone();
                 loop {
@@ -379,7 +378,7 @@ impl BgpSvr {
                         _ = canceltok.cancelled() => {
                             return;
                         }
-                        _ = slf.run_listen(sa) => {
+                        _ = slf.run_listen(sa.clone()) => {
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
                     }
@@ -427,11 +426,10 @@ impl BgpSvr {
         self.updater = None;
     }
     pub async fn say_state(&self) -> Result<Response<Body>, hyper::http::Error> {
-        let state = format!("{:?}", self.session_state.lock().unwrap());
         Response::builder()
             .status(StatusCode::OK)
             .header("Content-type", "text/plain")
-            .body(state.into())
+            .body("running".into())
     }
     pub async fn say_sessions(&self) -> Result<Response<Body>, hyper::http::Error> {
         let sess = match timeout(std::time::Duration::new(5, 0), self.sessions.read()).await {
@@ -477,6 +475,23 @@ impl BgpSvr {
                     self.rib.say_jsonrib(urlparts[3], req).await
                 }
             }
+            "csv" => {
+                if urlparts.len() < 4 {
+                    Ok(not_found())
+                } else {
+                    self.rib
+                        .say_csvrib(
+                            urlparts[3],
+                            req,
+                            if urlparts.len() < 5 {
+                                None
+                            } else {
+                                Some(urlparts[4])
+                            },
+                        )
+                        .await
+                }
+            }
             _ => Ok(not_found()),
         }
     }
@@ -491,7 +506,7 @@ impl BgpSvr {
     }
 }
 pub struct BAHItems<'a, 'b> {
-    bah: &'a BgpAttrHistory,
+    pub(crate) bah: &'a BgpAttrHistory,
     params: &'b RibResponseParams,
 }
 impl<'a, 'b> BAHItems<'a, 'b> {
@@ -531,8 +546,8 @@ impl<'a, 'b> serde::Serialize for BAHItems<'a, 'b> {
     }
 }
 pub struct BPEItems<'a, 'b> {
-    bpe: &'a BgpPathEntry,
-    params: &'b RibResponseParams,
+    pub(crate) bpe: &'a BgpPathEntry,
+    pub(crate) params: &'b RibResponseParams,
 }
 impl<'a, 'b> BPEItems<'a, 'b> {
     pub fn new(bpe: &'a BgpPathEntry, params: &'b RibResponseParams) -> Self {
@@ -563,18 +578,23 @@ impl<'a, 'b> serde::Serialize for BPEItems<'a, 'b> {
     }
 }
 pub struct BSEItems<'a, 'b> {
-    bse: &'a BgpSessionEntry,
-    params: &'b RibResponseParams,
+    pub(crate) bse: &'a BgpSessionEntry,
+    pub(crate) params: &'b RibResponseParams,
 }
 impl<'a, 'b> BSEItems<'a, 'b> {
     pub fn new(bse: &'a BgpSessionEntry, params: &'b RibResponseParams) -> Self {
         BSEItems { bse, params }
     }
     pub fn is_empty(&self) -> bool {
-        !self.bse.items.iter().any(|x| {
-            let v = BPEItems::new(x.1, self.params);
-            !v.is_empty()
-        })
+        !self
+            .bse
+            .items
+            .iter()
+            .filter(|(sid, _)| self.params.filter.filter_session(**sid))
+            .any(|x| {
+                let v = BPEItems::new(x.1, self.params);
+                !v.is_empty()
+            })
     }
 }
 impl<'a, 'b> serde::Serialize for BSEItems<'a, 'b> {
@@ -584,7 +604,12 @@ impl<'a, 'b> serde::Serialize for BSEItems<'a, 'b> {
     {
         let mut state = serializer.serialize_map(Some(self.bse.items.len()))?;
 
-        for (k, v) in self.bse.items.iter() {
+        for (k, v) in self
+            .bse
+            .items
+            .iter()
+            .filter(|(sid, _)| self.params.filter.filter_session(**sid))
+        {
             let v = BPEItems::new(v, self.params);
             if v.is_empty() {
                 continue;
@@ -663,8 +688,19 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
 pub struct RibResponse<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> {
     pub ribtype: String,
     pub length: usize,
-    params: RibResponseParams,
+    pub params: RibResponseParams,
     pub items: RibItems<'a, T>,
+}
+pub struct RibResponseIter<
+    'b: 'a,
+    'a,
+    T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString,
+> {
+    rsp: &'b RibResponse<'a, T>,
+    rfsn: Option<std::iter::Take<std::iter::Skip<RouteFilterSubnets<'a, 'a, T>>>>,
+    //rfsp: Option<std::iter::Take<std::iter::Skip<RouteFilterSupernets<'a,'a, T>>>>,
+    rfsp: Option<std::iter::Take<std::iter::Skip<SortIter<(&'a T, &'a BgpSessionEntry)>>>>,
+    cnt: usize,
 }
 impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> RibResponse<'a, T> {
     pub fn new(
@@ -683,6 +719,56 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> Rib
             },
         }
     }
+    pub fn iter<'b>(&'b self) -> RibResponseIter<'b, 'a, T> {
+        RibResponseIter {
+            rsp: self,
+            rfsn: Some(
+                self.items
+                    .filter
+                    .iter_nets(self.items.ribsafi, self.params.filter.clone())
+                    .skip(self.params.skip)
+                    .take(self.params.limit),
+            ),
+            rfsp: None,
+            cnt: 0,
+        }
+    }
+}
+impl<'b: 'a, 'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString>
+    std::iter::Iterator for RibResponseIter<'b, 'a, T>
+{
+    type Item = (&'a T, &'a BgpSessionEntry);
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(rfsn) = self.rfsn.as_mut() {
+            if let Some(r) = rfsn.next() {
+                self.cnt += 1;
+                return Some(r);
+            }
+            self.rfsn = None;
+            if self.cnt < 1 {
+                self.rfsp = Some(
+                    ribfilter::SortIter::new(
+                        self.rsp.items.filter.iter_super_nets(
+                            self.rsp.items.ribsafi,
+                            self.rsp.params.filter.clone(),
+                        ),
+                        &|a, b| {
+                            let alen = a.0.len();
+                            let blen = b.0.len();
+                            alen.cmp(&blen)
+                        },
+                    )
+                    .skip(self.rsp.params.skip)
+                    .take(self.rsp.params.limit),
+                );
+            }
+        };
+        if let Some(rfsp) = self.rfsp.as_mut() {
+            rfsp.next()
+        } else {
+            None
+        }
+    }
 }
 impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> serde::Serialize
     for RibResponse<'a, T>
@@ -698,6 +784,7 @@ impl<'a, T: ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString> ser
         state.serialize_field("limit", &self.params.limit)?;
         state.serialize_field("maxdepth", &self.params.filter.maxdepth)?;
         state.serialize_field("onlyactive", &self.params.filter.onlyactive)?;
+        state.serialize_field("sessionid", &self.params.filter.sessionid)?;
         state.serialize_field("changed_after", &self.params.filter.changed_after)?;
         state.serialize_field("changed_before", &self.params.filter.changed_before)?;
         state.serialize_field("found", &self.items.count())?;

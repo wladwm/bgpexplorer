@@ -1,5 +1,8 @@
+### 0.4.0 (2026-08-14)
+* implemented external storage to save route updates history (textfiles, mysql, clickhouse)
+
 ### 0.3.5 (2025-10-08)
-* fixed aspath with as_set
+* fixed aspath with asset
 * added filtering for time change
 
 ### 0.3.4 (2023-12-18)

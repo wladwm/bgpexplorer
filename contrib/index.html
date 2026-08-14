@@ -207,6 +207,7 @@
       return peer["addr"] + ' AS' + peer["as_num"];
     }
     function textSession(sessid) {
+      if(!(sessid in bgp_sessions)) return "";
       let sess = bgp_sessions[sessid];
       return textPeer(sess["peer1"]) + '-' + textPeer(sess["peer2"]);
     }
@@ -389,13 +390,24 @@
       });
       rdiv.innerHTML = rtxt + '</div>';
     }
-    function ExecuteQuery() {
-      let filterval = document.getElementById('filtertext').value;
-      let url = 'api/json/' + active_rib + '?skip=' + skip + '&limit=' + pagesize + '&filter=' + encodeURI(filterval);
+    function OnOnlyActiveChanged(){
+      queryRib.debounce_time = 1;
+      hidePopup();
+      ExecuteQuery();
+    }
+    function buildURIext(){
+      let url='';
       let chgb=document.getElementById('changedbefore')?.value.trim();
       if (chgb) url+='&changed_before='+encodeURI(chgb);
       let chga=document.getElementById('changedafter')?.value.trim();
       if (chga) url+='&changed_after='+encodeURI(chga);
+      let oa=document.getElementById('vact')?.checked;
+      if (oa) url+='&onlyactive=true';
+      return url;
+    }
+    function ExecuteQuery() {
+      let filterval = document.getElementById('filtertext').value;
+      let url = 'api/json/' + active_rib + '?skip=' + skip + '&limit=' + pagesize + '&filter=' + encodeURI(filterval)+buildURIext();
       queryRib.Query((event) => {
         try {
           hidePopup();
@@ -411,6 +423,11 @@
       queryRib.debounce_time = 1;
       hidePopup();
       ExecuteQuery();
+    }
+    function OnQueryCsv() {
+      let filterval = document.getElementById('filtertext').value;
+      let url = 'api/csv/' + active_rib + '/' + active_rib + '.csv?skip=0&limit=1000000&filter=' + encodeURI(filterval)+buildURIext();
+      window.location=url;
     }
     function OnFilterChange() {
       queryRib.debounce(() => {
@@ -787,7 +804,7 @@
     .sessions-container:nth-child(4n) {
       display: -webkit-inline-flex;
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       flex-grow: 0;
       flex-shrink: 1;
       background-color: #e0f0f0;
@@ -903,10 +920,10 @@
   <div id='ribs' class='attr-text'>No RIBs yet...</div>
   <div><input type=text id='filtertext' style='width:90%'
       placeholder='[-]10.0.0.0/8 community:100:1000 as:^100 as:100$ nh:1.1.1.1 rt:100:1000 rd:100:1'
-      onkeydown="return oninputkey(event)"><input id="querybtn" type="button" value="&gt;&gt;" OnClick="OnQueryBtn()">
+      onkeydown="return oninputkey(event)"><input id="querybtn" type="button" value="&gt;&gt;" OnClick="OnQueryBtn()"><input id="querycsv" type="button" value="CSV" OnClick="OnQueryCsv()">
   </div>
-  <img id='inprogress' src='wait.svg' border='0' style='display:none;position:fixed;width:32px;height:32px'>
-  <div><input type='checkbox' id="vchg" onchange="OnShowHideTimeselect()"><label for="vchg"> Changed</label> <span id='chg' style="display:none">From: <input type=text id='changedafter' style='width:20%' placeholder="1996-12-19T16:39:57-08:00"> - To:<input type=text id='changedbefore' style='width:20%' placeholder="1996-12-19T16:39:57-08:00"></span></div>
+  <img id='inprogress' src='wait.gif' border='0' style='display:none;position:fixed;width:32px;height:32px'>
+  <div><input type='checkbox' id="vact" onchange="OnOnlyActiveChanged()"><label for="vact"> Only active</label> <input type='checkbox' id="vchg" onchange="OnShowHideTimeselect()"><label for="vchg"> Changed</label> <span id='chg' style="display:none">From: <input type=text id='changedafter' style='width:20%' placeholder="1996-12-19T16:39:57-08:00"> - To:<input type=text id='changedbefore' style='width:20%' placeholder="1996-12-19T16:39:57-08:00"></span></div>
   <div id='noroutes' class='attr-text'>
     <ul>
       <li>Filter terms:

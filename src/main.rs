@@ -12,6 +12,8 @@ extern crate url;
 #[macro_use]
 extern crate log;
 extern crate pretty_env_logger;
+#[macro_use]
+extern crate anyhow;
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -35,12 +37,15 @@ mod service;
 use service::*;
 mod bgpsvc;
 use bgpsvc::*;
+#[cfg(feature = "whoisreq")]
 mod whoissvc;
+#[cfg(feature = "whoisreq")]
 use whoissvc::*;
 mod config;
 use config::*;
 mod ribfilter;
 mod ribservice;
+mod storage;
 mod subscriber;
 mod timestamp;
 
@@ -68,6 +73,7 @@ async fn simple_file_send(filename: &str) -> Result<Response<Body>, hyper::Error
 pub struct Svc {
     pub httproot: Arc<String>,
     pub bgp: Option<Arc<BgpSvr>>,
+    #[cfg(feature = "whoisreq")]
     pub whois: Arc<WhoisSvr>,
 }
 impl Clone for Svc {
@@ -75,15 +81,21 @@ impl Clone for Svc {
         Svc {
             httproot: self.httproot.clone(),
             bgp: self.bgp.clone(),
+            #[cfg(feature = "whoisreq")]
             whois: self.whois.clone(),
         }
     }
 }
 impl Svc {
-    pub fn new(http_root: Arc<String>, b: Arc<BgpSvr>, w: Arc<WhoisSvr>) -> Svc {
+    pub fn new(
+        http_root: Arc<String>,
+        b: Arc<BgpSvr>,
+        #[cfg(feature = "whoisreq")] w: Arc<WhoisSvr>,
+    ) -> Svc {
         Svc {
             httproot: http_root,
             bgp: Some(b),
+            #[cfg(feature = "whoisreq")]
             whois: w,
         }
     }
@@ -143,9 +155,11 @@ impl Svc {
             let urlparts: Vec<&str> = requri.split('/').collect();
             if urlparts.len() > 2 {
                 match urlparts[2] {
+                    #[cfg(feature = "whoisreq")]
                     "whois" => {
                         return self.whois.response_fn(&req).await;
                     }
+                    #[cfg(feature = "whoisreq")]
                     "dns" => {
                         return self.whois.response_fn(&req).await;
                     }
@@ -176,23 +190,119 @@ impl Svc {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
+    use storage::Storage;
     pretty_env_logger::init_timed();
-    let conf = match SvcConfig::from_inifile("bgpexplorer.ini") {
+    let fname = std::env::var("BGPEXPLORER").unwrap_or_else(|_| "bgpexplorer.ini".to_string());
+    let conf = match SvcConfig::from_inifile(&fname) {
         Ok(sc) => Arc::new(sc),
         Err(e) => {
             error!("{}", e);
             return Ok(());
         }
     };
-
+    let storage: Arc<dyn crate::storage::Storage + std::marker::Send + Sync> = match conf
+        .storage
+        .as_ref()
+    {
+        None => {
+            let mut s = storage::NoStorage::default();
+            s.open().await?;
+            Arc::new(s)
+        }
+        Some(s) => {
+            let pars = match s.split_once(":") {
+                Some(p) => p,
+                None => {
+                    return Err(anyhow!("Unknown storage: {}", s));
+                }
+            };
+            match pars.0 {
+                "files" => {
+                    let mut s = storage::textfile::TextWriter::new(pars.1.to_string());
+                    s.open().await?;
+                    Arc::new(s)
+                }
+                #[cfg(feature = "clickhouse")]
+                "clickhouse" => {
+                    let mut opts = klickhouse::ClientOptions::default();
+                    let mut target = "127.0.0.1:9000".to_string();
+                    let mut cso = storage::clickhouse::ClickhouseStorageOptions::default();
+                    for p in pars.1.split(",") {
+                        if let Some(v) = p.split_once("=") {
+                            match v.0 {
+                                "id" => cso.instance_id = v.1.to_string(),
+                                "username" => opts.username = v.1.to_string(),
+                                "password" => opts.password = v.1.to_string(),
+                                "database" => opts.default_database = v.1.to_string(),
+                                "partition_by" => cso.partition_by = v.1.to_string(),
+                                "table_ttl" => cso.table_ttl = v.1.to_string(),
+                                "connect" | "target" => target = v.1.to_string(),
+                                "batch_size" => {
+                                    cso.batch_size = v.1.parse().unwrap_or(cso.batch_size)
+                                }
+                                "batch_duration" => {
+                                    cso.batch_dur = std::time::Duration::from_secs_f64(
+                                        v.1.parse().unwrap_or(5f64),
+                                    )
+                                }
+                                "break_count" => {
+                                    cso.break_count = v.1.parse().unwrap_or(cso.break_count)
+                                }
+                                _ => {
+                                    warn!("clickhouse unknown {}", p);
+                                }
+                            }
+                        }
+                    }
+                    let mut s =
+                        storage::clickhouse::ClickhouseStorage::new(target, opts, cso).await?;
+                    s.open().await?;
+                    Arc::new(s)
+                }
+                #[cfg(feature = "mysql")]
+                "mysql" => {
+                    let mut opts = mysql_async::OptsBuilder::from_opts(
+                        mysql_async::Opts::from_url("mysql://localhost/bgp")?,
+                    );
+                    let mut instance: String = "".to_string();
+                    for p in pars.1.split(",") {
+                        if let Some(v) = p.split_once("=") {
+                            match v.0 {
+                                "id" => instance = v.1.to_string(),
+                                "dburl" => {
+                                    opts = mysql_async::OptsBuilder::from_opts(
+                                        mysql_async::Opts::from_url(v.1)?,
+                                    )
+                                }
+                                "password" => opts = opts.pass(Some(v.1)),
+                                "database" => opts = opts.db_name(Some(v.1)),
+                                "user" | "username" => opts = opts.user(Some(v.1)),
+                                "host" | "connect" | "target" => opts = opts.ip_or_hostname(v.1),
+                                _ => {
+                                    warn!("mysql unknown {}", p);
+                                }
+                            }
+                        }
+                    }
+                    opts = opts.setup(vec!["set NAMES utf8mb4", "SET CHARSET utf8mb4"]);
+                    let pool = mysql_async::Pool::new(opts);
+                    let mut s = storage::mysql::MysqlStorage::new(instance, pool).await?;
+                    s.open().await?;
+                    Arc::new(s)
+                }
+                _ => return Err(anyhow!("Unknown storage: {}", s)),
+            }
+        }
+    };
     let token = tokio_util::sync::CancellationToken::new();
-    let mut svr = BgpSvr::new(conf.clone(), token.clone());
+    let mut svr = BgpSvr::new(conf.clone(), storage.clone(), token.clone());
     svr.start_updates().await;
     let msvr = Arc::new(svr);
     let svc = Svc::new(
         Arc::new(conf.httproot.clone()),
         msvr.clone(),
+        #[cfg(feature = "whoisreq")]
         Arc::new(WhoisSvr::new(&conf)),
     );
 
@@ -316,7 +426,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Server done: {}", conf.httplisten);
         token.cancel();
     };
+    debug!("shutdown service");
     svc.shutdown().await;
+    debug!("shutdown storage");
+    if let Err(e) = storage.shutdown().await {
+        error!("storage shutdown error: {}", e);
+    }
     tck1.await.unwrap();
     Ok(())
 }

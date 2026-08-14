@@ -13,8 +13,8 @@ pub struct SortIter<T> {
     sorted: Vec<T>,
 }
 impl<T> SortIter<T> {
-    pub fn new(
-        srciter: &mut dyn std::iter::Iterator<Item = T>,
+    pub fn new<I: std::iter::Iterator<Item = T>>(
+        srciter: I,
         fnc: &dyn Fn(&T, &T) -> std::cmp::Ordering,
     ) -> SortIter<T> {
         let mut v = Vec::<T>::new();
@@ -451,7 +451,49 @@ impl FilterMatchRoute for BgpMdtV6 {
         FilterItemMatchResult::multi(&[self.addr.match_item(fi), fi.match_addr_v6(&self.group)])
     }
 }
-impl FilterMatchRoute for BgpFlowSpec<BgpAddrV4> {}
+impl FilterMatchRoute for BgpFlowSpec<BgpAddrV4> {
+    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        let v: Vec<_> = self
+            .items
+            .iter()
+            .map(|x| {
+                use zettabgp::afi::BgpFlowSpecItem::*;
+
+                fn match_fscmpval(
+                    fi: &FilterItem,
+                    vv: &zettabgp::afi::flowspec::FSCmpValOpers,
+                ) -> FilterItemMatchResult {
+                    match fi {
+                        FilterItem::Num(n) => {
+                            if vv.iter().any(|vv| (vv.value as u64) == *n) {
+                                FilterItemMatchResult::Yes
+                            } else {
+                                FilterItemMatchResult::Unknown
+                            }
+                        }
+                        _ => FilterItemMatchResult::Unknown,
+                    }
+                }
+
+                match x {
+                    PrefixDst(t) => t.match_item(fi),
+                    PrefixSrc(t) => t.match_item(fi),
+                    Proto(vv) => match_fscmpval(fi, vv),
+                    PortAny(vv) => match_fscmpval(fi, vv),
+                    PortDst(vv) => match_fscmpval(fi, vv),
+                    PortSrc(vv) => match_fscmpval(fi, vv),
+                    IcmpType(vv) => match_fscmpval(fi, vv),
+                    IcmpCode(vv) => match_fscmpval(fi, vv),
+                    PacketLength(vv) => match_fscmpval(fi, vv),
+                    Dscp(vv) => match_fscmpval(fi, vv),
+                    FlowLabel(vv) => match_fscmpval(fi, vv),
+                    _ => FilterItemMatchResult::Unknown,
+                }
+            })
+            .collect();
+        FilterItemMatchResult::multi(&v)
+    }
+}
 impl<T: BgpItem<T> + FilterMatchRoute + Clone> FilterMatchRoute for WithRd<T> {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
         //eprintln!("WithRd::match_item {:?} - {}", fi, self);
@@ -587,28 +629,35 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
             match self.srcitr.next() {
                 None => break,
                 Some(q) => {
-                    if q.1.items.iter().any(|ssitr| {
-                        ssitr
-                            .1
-                            .items
-                            .iter()
-                            .filter(|x| self.filter.respflt.filter_path_e(x.1))
-                            .any(|pitr| {
-                                pitr.1
-                                    .items
-                                    .iter()
-                                    .filter(|hr| self.filter.respflt.filter_ah(hr.0, hr.1))
-                                    .skip(if pitr.1.items.len() > self.filter.respflt.maxdepth {
-                                        pitr.1.items.len() - self.filter.respflt.maxdepth
-                                    } else {
-                                        0
-                                    })
-                                    .any(|histitem| {
-                                        self.filter.filter.match_route(q.0, &histitem.1.attrs)
-                                            == FilterItemMatchResult::Yes
-                                    })
-                            })
-                    }) {
+                    if q.1
+                        .items
+                        .iter()
+                        .filter(|(k, _)| self.filter.respflt.filter_session(**k))
+                        .any(|ssitr| {
+                            ssitr
+                                .1
+                                .items
+                                .iter()
+                                .filter(|x| self.filter.respflt.filter_path_e(x.1))
+                                .any(|pitr| {
+                                    pitr.1
+                                        .items
+                                        .iter()
+                                        .filter(|hr| self.filter.respflt.filter_ah(hr.0, hr.1))
+                                        .skip(
+                                            if pitr.1.items.len() > self.filter.respflt.maxdepth {
+                                                pitr.1.items.len() - self.filter.respflt.maxdepth
+                                            } else {
+                                                0
+                                            },
+                                        )
+                                        .any(|histitem| {
+                                            self.filter.filter.match_route(q.0, &histitem.1.attrs)
+                                                == FilterItemMatchResult::Yes
+                                        })
+                                })
+                        })
+                    {
                         return Some(q);
                     }
                 }
@@ -651,28 +700,37 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
             match self.srcitr.next() {
                 None => break,
                 Some(q) => {
-                    if q.1.items.iter().any(|ssitr| {
-                        ssitr
-                            .1
-                            .items
-                            .iter()
-                            .filter(|pitr| self.filter.respflt.filter_path_e(pitr.1))
-                            .any(|pitr| {
-                                pitr.1
-                                    .items
-                                    .iter()
-                                    .filter(|hr| self.filter.respflt.filter_ah(hr.0, hr.1))
-                                    .skip(if pitr.1.items.len() > self.filter.respflt.maxdepth {
-                                        pitr.1.items.len() - self.filter.respflt.maxdepth
-                                    } else {
-                                        0
-                                    })
-                                    .any(|histitem| {
-                                        self.filter.filter.match_super_route(q.0, &histitem.1.attrs)
-                                            == FilterItemMatchResult::Yes
-                                    })
-                            })
-                    }) {
+                    if q.1
+                        .items
+                        .iter()
+                        .filter(|(k, _)| self.filter.respflt.filter_session(**k))
+                        .any(|ssitr| {
+                            ssitr
+                                .1
+                                .items
+                                .iter()
+                                .filter(|pitr| self.filter.respflt.filter_path_e(pitr.1))
+                                .any(|pitr| {
+                                    pitr.1
+                                        .items
+                                        .iter()
+                                        .filter(|hr| self.filter.respflt.filter_ah(hr.0, hr.1))
+                                        .skip(
+                                            if pitr.1.items.len() > self.filter.respflt.maxdepth {
+                                                pitr.1.items.len() - self.filter.respflt.maxdepth
+                                            } else {
+                                                0
+                                            },
+                                        )
+                                        .any(|histitem| {
+                                            self.filter
+                                                .filter
+                                                .match_super_route(q.0, &histitem.1.attrs)
+                                                == FilterItemMatchResult::Yes
+                                        })
+                                })
+                        })
+                    {
                         return Some(q);
                     }
                 }
@@ -1129,19 +1187,11 @@ impl FilterItem {
         };
         match RE_AS.captures(itemstr) {
             Some(caps) => {
-                let sa = BgpASpath::from(match caps.get(2) {
-                    Some(sv) => {
-                        let mut v: Vec<u32> = Vec::new();
-                        for s in sv.as_str().split(',') {
-                            match s.parse() {
-                                Ok(n) => v.push(n),
-                                Err(_) => {}
-                            }
-                        }
-                        v
-                    }
-                    None => Vec::<u32>::new(),
-                });
+                let sa = caps
+                    .get(2)
+                    .map(|s| s.as_str().parse().ok())
+                    .flatten()
+                    .unwrap_or(BgpASpath::new());
                 if sa.value.len() < 1 {
                     return FilterItem::ASPath(FilterASPath::Empty);
                 }
@@ -1153,7 +1203,7 @@ impl FilterItem {
                     Some(s) => s.as_str(),
                     None => "",
                 };
-                return FilterItem::ASPath(if sb == "^" && se == "$" {
+                return dbg!(FilterItem::ASPath(if sb == "^" && se == "$" {
                     FilterASPath::FullMatch(sa)
                 } else if se == "$" {
                     FilterASPath::EndsWith(sa)
@@ -1161,7 +1211,7 @@ impl FilterItem {
                     FilterASPath::StartsWith(sa)
                 } else {
                     FilterASPath::Contains(sa)
-                });
+                }));
             }
             _ => {}
         };
@@ -1471,36 +1521,9 @@ impl FilterItem {
             FilterItem::ASPath(aspflt) => match aspflt {
                 FilterASPath::Empty => (attr.aspath.value.len() == 0).into(),
                 FilterASPath::FullMatch(asp) => (attr.aspath.value == asp.value).into(),
-                FilterASPath::Contains(asp) => {
-                    if asp.value.len() > attr.aspath.value.len() {
-                        FilterItemMatchResult::No
-                    } else if asp.value.len() == attr.aspath.value.len() {
-                        (attr.aspath.value == asp.value).into()
-                    } else {
-                        for idx in 0..(attr.aspath.value.len() - asp.value.len() + 1) {
-                            if attr.aspath.value[idx..(idx + asp.value.len())] == asp.value {
-                                return FilterItemMatchResult::Yes;
-                            }
-                        }
-                        FilterItemMatchResult::No
-                    }
-                }
-                FilterASPath::StartsWith(asp) => {
-                    if asp.value.len() > attr.aspath.value.len() {
-                        FilterItemMatchResult::No
-                    } else {
-                        (asp.value == attr.aspath.value[0..asp.value.len()]).into()
-                    }
-                }
-                FilterASPath::EndsWith(asp) => {
-                    if asp.value.len() > attr.aspath.value.len() {
-                        FilterItemMatchResult::No
-                    } else {
-                        (asp.value
-                            == attr.aspath.value[attr.aspath.value.len() - asp.value.len()..])
-                            .into()
-                    }
-                }
+                FilterASPath::Contains(asp) => attr.aspath.contains(asp).into(),
+                FilterASPath::StartsWith(asp) => attr.aspath.starts_with(asp).into(),
+                FilterASPath::EndsWith(asp) => attr.aspath.ends_with(asp).into(),
             },
             _ => FilterItemMatchResult::Unknown,
         }

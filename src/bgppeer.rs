@@ -1,4 +1,5 @@
 use crate::bgpsvc::*;
+use crate::config::BgpSessionState;
 use chrono::prelude::*;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -54,7 +55,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
     }
     fn get_message_body_ref(buf: &mut [u8]) -> Result<&mut [u8], BgpError> {
         if buf.len() < 19 {
-            return Err(BgpError::insufficient_buffer_size());
+            return Err(BgpError::InsufficientBufferSize(file!(), line!()));
         }
         Ok(&mut buf[19..])
     }
@@ -97,11 +98,17 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
             .update_handler
             .register_session(Arc::new(BgpSessionDesc::new(mysess, remsess)))
             .await;
+        self.update_handler
+            .set_session_state(self.sessionid, BgpSessionState::Established)
+            .await;
         Ok(())
     }
     pub async fn start_active(&mut self) -> Result<(), BgpError> {
         info!("start_active");
         loop {
+            self.update_handler
+                .set_session_state(self.sessionid, BgpSessionState::Idle)
+                .await;
             let bom = self.params.open_message();
             let mut buf = [255u8; 255];
             let sz =
@@ -114,6 +121,9 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
             let mysess = BgpPeerDesc::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), bom.clone());
             self.send_message_buf(&mut buf, BgpMessageType::Open, sz)
                 .await?;
+            self.update_handler
+                .set_session_state(self.sessionid, BgpSessionState::OpenSent)
+                .await;
             let msg = match self.recv_message_head().await {
                 Err(e) => {
                     return Err(e);
@@ -132,6 +142,9 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                     self.sessionid = self
                         .update_handler
                         .register_session(Arc::new(BgpSessionDesc::new(mysess, remsess)))
+                        .await;
+                    self.update_handler
+                        .set_session_state(self.sessionid, BgpSessionState::OpenConfirm)
                         .await;
                     return Ok(());
                 }
@@ -179,6 +192,9 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
     pub async fn lifecycle(&mut self, cancel: tokio_util::sync::CancellationToken) {
         let mut buf = [255u8; 4096];
         let keep_interval = chrono::Duration::seconds((self.params.hold_time / 3) as i64);
+        self.update_handler
+            .set_session_state(self.sessionid, BgpSessionState::Established)
+            .await;
         loop {
             let mut tosleep = Local::now() - self.keepalive_sent;
             if tosleep >= keep_interval {
@@ -255,6 +271,9 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                 }
             }
         }
+        self.update_handler
+            .set_session_state(self.sessionid, BgpSessionState::Idle)
+            .await;
     }
     pub async fn close(&mut self) {
         match self.peersock.shutdown().await {
@@ -263,5 +282,8 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                 error!("Warning: socket shutdown error: {}", e)
             }
         }
+        self.update_handler
+            .set_session_state(self.sessionid, BgpSessionState::Idle)
+            .await;
     }
 }

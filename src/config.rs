@@ -3,11 +3,13 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
+#[cfg(feature = "whoisreq")]
 use whois_rust::WhoIs;
 use zettabgp::prelude::*;
 
 /// peer protocol mode
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PeerMode {
     /// bgpexplorer connects to BGP router
     BgpActive,
@@ -27,6 +29,128 @@ pub enum HistoryChangeMode {
     OnlyDiffer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dur(Duration);
+
+impl Dur {
+    const DUR_1D: Duration = Duration::new(86400, 0);
+    const DUR_1H: Duration = Duration::new(3600, 0);
+    const DUR_1MIN: Duration = Duration::new(60, 0);
+    pub fn dur(&self) -> std::time::Duration {
+        self.0
+    }
+    pub const fn from_secs(s: u64) -> Dur {
+        Dur(Duration::new(s, 0))
+    }
+    pub fn from_secs_f64(s: f64) -> Dur {
+        Dur(Duration::from_secs_f64(s))
+    }
+    fn fromstr(s: &str) -> Result<Dur, std::num::ParseFloatError> {
+        let mut d = std::time::Duration::new(0, 0);
+        let mut n = 0u64;
+        for c in s.chars() {
+            if let Some(q) = c.to_digit(10) {
+                n = n * 10 + (q as u64);
+                continue;
+            }
+            match c {
+                'd' => {
+                    d += Self::DUR_1D * (n as u32);
+                    n = 0;
+                }
+                'h' => {
+                    d += Self::DUR_1H * (n as u32);
+                    n = 0;
+                }
+                'm' => {
+                    d += Self::DUR_1MIN * (n as u32);
+                    n = 0;
+                }
+                's' => {
+                    d += Duration::new(n, 0);
+                    n = 0;
+                }
+                ' ' => {}
+                _ => return Ok(Dur(Duration::from_secs_f64(s.parse()?))),
+            }
+        }
+        if n > 0 {
+            d += Duration::new(n, 0);
+        }
+        Ok(Dur(d))
+    }
+}
+impl std::str::FromStr for Dur {
+    type Err = std::num::ParseFloatError;
+
+    fn from_str(s: &str) -> Result<Dur, Self::Err> {
+        match s.parse() {
+            Ok(n) => Ok(Dur(std::time::Duration::from_secs_f64(n))),
+            Err(_) => Dur::fromstr(s),
+        }
+    }
+}
+impl std::convert::From<std::time::Duration> for Dur {
+    fn from(t: std::time::Duration) -> Self {
+        Dur(t)
+    }
+}
+impl std::convert::Into<std::time::Duration> for Dur {
+    fn into(self) -> std::time::Duration {
+        self.0
+    }
+}
+impl std::fmt::Display for Dur {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut msc = self.0.as_millis();
+        let mut fw = false;
+        if msc >= 86400000 {
+            let d = msc / 86400000;
+            msc -= d * 86400000;
+            write!(f, "{}d", d)?;
+            fw = true;
+        };
+        if msc >= 3600000 {
+            let h = msc / 3600000;
+            msc -= h * 3600000;
+            write!(f, "{}h", h)?;
+            fw = true;
+        };
+        if msc >= 60000 {
+            let m = msc / 60000;
+            msc -= m * 60000;
+            write!(f, "{}m", m)?;
+            fw = true;
+        };
+        if msc >= 1000 {
+            let s = msc / 1000;
+            msc -= s * 1000;
+            write!(f, "{}s", s)?;
+            fw = true;
+        };
+        if !fw || msc != 0 {
+            write!(f, "{}ms", msc)
+        } else {
+            Ok(())
+        }
+    }
+}
+#[derive(PartialEq, Eq, Debug, Clone)]
+pub enum BgpSessionState {
+    Unknown,
+    Idle,
+    Connect,
+    Active,
+    OpenSent,
+    OpenConfirm,
+    Established,
+    BMP,
+}
+impl std::default::Default for BgpSessionState {
+    fn default() -> BgpSessionState {
+        BgpSessionState::Unknown
+    }
+}
 /// peer
 #[derive(Debug, Clone)]
 pub struct ProtoPeer {
@@ -34,6 +158,7 @@ pub struct ProtoPeer {
     pub mode: PeerMode,
     pub peer: Option<SocketAddr>,
     pub protolisten: Option<SocketAddr>,
+    pub binddevice: Option<String>,
     pub bgppeeras: u32,
     pub flt_rd: Option<zettabgp::afi::BgpRD>,
     pub bgpsessionparams: Arc<std::sync::Mutex<Option<BgpSessionParams>>>,
@@ -45,6 +170,88 @@ impl PartialEq for ProtoPeer {
     }
 }
 impl Eq for ProtoPeer {}
+impl PartialOrd for ProtoPeer {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering::*;
+        match self.routerid.partial_cmp(&other.routerid) {
+            Some(Less) => return Some(Less),
+            Some(Greater) => return Some(Greater),
+            _ => {}
+        };
+        match self.mode.partial_cmp(&other.mode) {
+            Some(Less) => return Some(Less),
+            Some(Greater) => return Some(Greater),
+            _ => {}
+        };
+        match self.peer.partial_cmp(&other.peer) {
+            Some(Less) => return Some(Less),
+            Some(Greater) => return Some(Greater),
+            _ => {}
+        };
+        match self.protolisten.partial_cmp(&other.protolisten) {
+            Some(Less) => return Some(Less),
+            Some(Greater) => return Some(Greater),
+            _ => {}
+        };
+        match self.binddevice.partial_cmp(&other.binddevice) {
+            Some(Less) => return Some(Less),
+            Some(Greater) => return Some(Greater),
+            _ => {}
+        };
+        match self.bgppeeras.partial_cmp(&other.bgppeeras) {
+            Some(Less) => return Some(Less),
+            Some(Greater) => return Some(Greater),
+            _ => {}
+        };
+        match self.flt_rd.partial_cmp(&other.flt_rd) {
+            Some(Less) => return Some(Less),
+            Some(Greater) => return Some(Greater),
+            _ => {}
+        };
+        None
+    }
+}
+impl Ord for ProtoPeer {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering::*;
+        match self.routerid.cmp(&other.routerid) {
+            Less => return Less,
+            Greater => return Greater,
+            _ => {}
+        };
+        match self.mode.cmp(&other.mode) {
+            Less => return Less,
+            Greater => return Greater,
+            _ => {}
+        };
+        match self.peer.cmp(&other.peer) {
+            Less => return Less,
+            Greater => return Greater,
+            _ => {}
+        };
+        match self.protolisten.cmp(&other.protolisten) {
+            Less => return Less,
+            Greater => return Greater,
+            _ => {}
+        };
+        match self.binddevice.cmp(&other.binddevice) {
+            Less => return Less,
+            Greater => return Greater,
+            _ => {}
+        };
+        match self.bgppeeras.cmp(&other.bgppeeras) {
+            Less => return Less,
+            Greater => return Greater,
+            _ => {}
+        };
+        match self.flt_rd.cmp(&other.flt_rd) {
+            Less => return Less,
+            Greater => return Greater,
+            _ => {}
+        };
+        Equal
+    }
+}
 impl ProtoPeer {
     pub fn from_ini(
         svcsection: &std::collections::HashMap<
@@ -92,6 +299,11 @@ impl ProtoPeer {
         } else if peermode == PeerMode::BgpActive || peermode == PeerMode::BmpActive {
             // fatal error
             return Err(ErrorConfig::from_str("peer was not specified"));
+        } else {
+            None
+        };
+        let binddevice: Option<String> = if svcsection.contains_key("binddevice") {
+            svcsection["binddevice"].as_ref().cloned()
         } else {
             None
         };
@@ -254,6 +466,7 @@ impl ProtoPeer {
             routerid,
             mode: peermode,
             peer,
+            binddevice,
             protolisten,
             bgppeeras,
             flt_rd,
@@ -325,6 +538,32 @@ impl ProtoPeer {
         *lck = Some(pbsp.clone());
         pbsp
     }
+    pub fn make_tcp(&self) -> std::io::Result<tokio::net::TcpSocket> {
+        let socket = if self.protolisten.map(|sa| sa.is_ipv4()).unwrap_or(true) {
+            tokio::net::TcpSocket::new_v4()?
+        } else {
+            tokio::net::TcpSocket::new_v6()?
+        };
+        #[cfg(target_family = "unix")]
+        if let Some(dv) = self.binddevice.as_ref() {
+            socket.bind_device(Some(dv.as_bytes()))?;
+        };
+        if let Some(sa) = self.protolisten.as_ref() {
+            socket.bind(sa.clone())?;
+        };
+        Ok(socket)
+    }
+    pub async fn connect(&self) -> std::io::Result<tokio::net::TcpStream> {
+        if let Some(trg) = self.peer.as_ref() {
+            let sck = self.make_tcp()?;
+            sck.connect(trg.clone()).await
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "No peer parameter",
+            ))
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -335,16 +574,21 @@ pub struct SvcConfig {
     pub httptimeout: u64,
     pub timeidx_granularity: u64,
     pub historymode: HistoryChangeMode,
+    #[cfg(feature = "whoisreq")]
     pub whoisconfig: WhoIs,
+    #[cfg(feature = "whoisreq")]
     pub whoisdb: String,
-    pub whoisreqtimeout: u64,
-    pub whoiscachesecs: i64,
+    pub whoisreqtimeout: Dur,
+    pub whoiscache: Dur,
     pub whoisdnses: Vec<std::net::SocketAddr>,
+    pub dnstimeout: Dur,
     pub peers: Vec<Arc<ProtoPeer>>,
     pub purge_after_withdraws: u64,
     pub purge_every: chrono::Duration,
     pub snapshot_file: Option<String>,
     pub snapshot_every: Option<chrono::Duration>,
+    pub storage: Option<String>,
+    pub storage_queue_depth: usize,
 }
 
 #[derive(Debug)]
@@ -577,22 +821,23 @@ impl SvcConfig {
         } else {
             chrono::Duration::minutes(5)
         };
-        let whoisreqtimeout: u64 = if mainsection.contains_key("whois_request_timeout") {
+        let whoisreqtimeout: Dur = if mainsection.contains_key("whois_request_timeout") {
             match mainsection["whois_request_timeout"] {
-                Some(ref s) => s.parse().unwrap_or(30),
-                None => 30,
+                Some(ref s) => s.parse().unwrap_or(Dur::from_secs(30)),
+                None => Dur::from_secs(30),
             }
         } else {
-            30
+            Dur::from_secs(30)
         };
-        let whoiscachesecs: i64 = if mainsection.contains_key("whois_cache_seconds") {
+        let whoiscache: Dur = if mainsection.contains_key("whois_cache_seconds") {
             match mainsection["whois_cache_seconds"] {
-                Some(ref s) => s.parse().unwrap_or(1800),
-                None => 1800,
+                Some(ref s) => s.parse().unwrap_or(Dur::from_secs(1800)),
+                None => Dur::from_secs(1800),
             }
         } else {
-            1800
+            Dur::from_secs(1800)
         };
+        #[cfg(feature = "whoisreq")]
         let whois: WhoIs = if mainsection.contains_key("whoisjsonconfig") {
             match mainsection["whoisjsonconfig"] {
                 Some(ref s) => WhoIs::from_path(s).unwrap(),
@@ -603,6 +848,7 @@ impl SvcConfig {
         } else {
             return Err(ErrorConfig::from_str("Invalid whoisjsonconfig"));
         };
+        #[cfg(feature = "whoisreq")]
         let whoisdb: String = if mainsection.contains_key("whoisdb") {
             match mainsection["whoisdb"] {
                 Some(ref s) => s.to_string(),
@@ -634,8 +880,31 @@ impl SvcConfig {
                 }
             }
         };
+        let mut dnstimeout = Dur::from_secs(5);
+        if mainsection.contains_key("dnstimeout") {
+            if let Some(s) = mainsection["dnstimeout"].as_ref() {
+                match s.parse() {
+                    Ok(dur) => dnstimeout = dur,
+                    Err(_) => {}
+                }
+            }
+        }
         if dnses.is_empty() {
             dnses.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53));
+        };
+        let storage = if mainsection.contains_key("storage") {
+            mainsection["storage"].as_ref().map(|s| s.to_string())
+        } else {
+            None
+        };
+        let storage_queue_depth = if mainsection.contains_key("storage_queue_depth") {
+            mainsection["storage_queue_depth"]
+                .as_ref()
+                .map(|s| s.parse().ok())
+                .flatten()
+                .unwrap_or(100)
+        } else {
+            100
         };
         Ok(SvcConfig {
             httplisten,
@@ -643,17 +912,22 @@ impl SvcConfig {
             httproot,
             historydepth,
             historymode,
+            #[cfg(feature = "whoisreq")]
             whoisconfig: whois,
+            #[cfg(feature = "whoisreq")]
             whoisdb,
             whoisdnses: dnses,
+            dnstimeout,
             whoisreqtimeout,
-            whoiscachesecs,
+            whoiscache,
             purge_after_withdraws,
             purge_every,
             peers,
             snapshot_file,
             snapshot_every,
             timeidx_granularity,
+            storage,
+            storage_queue_depth,
         })
     }
 }

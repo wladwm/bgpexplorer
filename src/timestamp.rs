@@ -2,7 +2,7 @@ use chrono::prelude::*;
 use chrono::{Local, LocalResult, TimeZone};
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct Timestamp(DateTime<Local>);
+pub struct Timestamp(pub DateTime<Local>);
 impl Timestamp {
     pub fn now() -> Self {
         Timestamp(Local::now())

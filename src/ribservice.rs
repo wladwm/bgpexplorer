@@ -1,3 +1,4 @@
+use crate::bgpattrs::{BgpAttrEntry, BgpAttrs};
 use crate::bgprib::*;
 use crate::service::*;
 use crate::timestamp::Timestamp;
@@ -5,6 +6,7 @@ use crate::*;
 use chrono::prelude::*;
 use futures::executor::block_on;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::*;
@@ -13,8 +15,39 @@ use tokio::time::timeout;
 use zettabgp::prelude::*;
 
 const HTTP_CONTENT_TYPE: &'static str = "Content-Type";
+const HTTP_CONTENT_DISPOSITION: &'static str = "Content-Disposition";
 const HTTP_CT_TEXT_PLAIN: &'static str = "text/plain";
 const HTTP_CT_TEXT_JSON: &'static str = "text/json";
+
+const KEY_PATHES: &'static str = "pathes";
+const KEY_COMMUNITIES: &'static str = "comms";
+const KEY_LARGE_COMMUNITIES: &'static str = "lcomms";
+const KEY_EXT_COMMUNITIES: &'static str = "extcomms";
+const KEY_ATTRS: &'static str = "attrs";
+const KEY_CLUSTERS: &'static str = "clusters";
+const KEY_STORES: &'static str = "stores";
+const KEY_IPV4U: &'static str = "ipv4u";
+const KEY_IPV4M: &'static str = "ipv4m";
+const KEY_IPV4LU: &'static str = "ipv4lu";
+const KEY_VPNV4U: &'static str = "vpnv4u";
+const KEY_VPNV4M: &'static str = "vpnv4m";
+const KEY_IPV6U: &'static str = "ipv6u";
+const KEY_IPV6LU: &'static str = "ipv6lu";
+const KEY_VPNV6U: &'static str = "vpnv6u";
+const KEY_VPNV6M: &'static str = "vpnv6m";
+const KEY_L2VPLS: &'static str = "l2vpls";
+const KEY_MVPN: &'static str = "mvpn";
+const KEY_EVPN: &'static str = "evpn";
+const KEY_FS4U: &'static str = "fs4u";
+const KEY_IPV4MDT: &'static str = "ipv4mdt";
+const KEY_IPV6MDT: &'static str = "ipv6mdt";
+
+fn http_err<E: std::error::Error>(e: E) -> Result<Response<Body>, hyper::http::Error> {
+    Response::builder()
+        .status(StatusCode::from_u16(500).unwrap())
+        .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_PLAIN)
+        .body(format!("Error: {:?}", e).into())
+}
 
 #[derive(Clone)]
 pub struct RibResponseFilter {
@@ -22,6 +55,18 @@ pub struct RibResponseFilter {
     pub onlyactive: bool,
     pub changed_before: Option<Timestamp>,
     pub changed_after: Option<Timestamp>,
+    pub sessionid: Option<u16>,
+}
+impl std::default::Default for RibResponseFilter {
+    fn default() -> Self {
+        RibResponseFilter {
+            maxdepth: 10,
+            onlyactive: false,
+            changed_before: None,
+            changed_after: None,
+            sessionid: None,
+        }
+    }
 }
 impl RibResponseFilter {
     pub fn new(maxdepth: usize, onlyactive: bool) -> RibResponseFilter {
@@ -30,23 +75,36 @@ impl RibResponseFilter {
             onlyactive,
             changed_before: None,
             changed_after: None,
+            sessionid: None,
         }
     }
     pub fn extract_params(&mut self, hashmap: &HashMap<String, String>) {
         if let Some(n) = get_url_param(hashmap, "maxdepth") {
             self.maxdepth = n;
         };
-        if let Some(n) = get_url_param(hashmap, "onlyactive") {
-            self.onlyactive = n;
-        };
-        if let Some(n) = get_url_param(hashmap, "changed_before") {
-            self.changed_before = Some(n);
-        };
-        if let Some(n) = get_url_param(hashmap, "changed_after") {
-            self.changed_after = Some(n);
-        };
+        self.onlyactive = get_url_param(hashmap, "onlyactive").unwrap_or(false);
+        self.changed_before = get_url_param(hashmap, "changed_before");
+        self.changed_after = get_url_param(hashmap, "changed_after");
+        self.sessionid = get_url_param(hashmap, "sessionid");
+    }
+    pub fn filter_session(&self, session_id: u16) -> bool {
+        if self.sessionid.is_none() {
+            return true;
+        }
+        *self.sessionid.as_ref().unwrap() == session_id
     }
     pub fn filter_path_e(&self, bp: &BgpAttrHistory) -> bool {
+        if self.onlyactive {
+            if !bp
+                .items
+                .iter()
+                .next_back()
+                .map(|x| x.1.active)
+                .unwrap_or(false)
+            {
+                return false;
+            }
+        }
         if let Some(cb) = self.changed_before.as_ref() {
             if bp
                 .items
@@ -94,12 +152,21 @@ pub struct RibResponseParams {
     pub limit: usize,
     pub filter: RibResponseFilter,
 }
+impl std::default::Default for RibResponseParams {
+    fn default() -> Self {
+        RibResponseParams {
+            skip: 0,
+            limit: 1000,
+            filter: Default::default(),
+        }
+    }
+}
 impl RibResponseParams {
-    pub fn new(skip: usize, limit: usize, maxdepth: usize, onlyactive: bool) -> RibResponseParams {
+    pub fn new(skip: usize, limit: usize, filter: RibResponseFilter) -> RibResponseParams {
         RibResponseParams {
             skip,
             limit,
-            filter: RibResponseFilter::new(maxdepth, onlyactive),
+            filter,
         }
     }
     pub fn extract_params(&mut self, hashmap: &HashMap<String, String>) {
@@ -126,6 +193,13 @@ impl BgpRIBts {
     }
     pub async fn shutdown(&self) {
         self.rib.read().await.shutdown().await;
+    }
+    pub async fn register_session(
+        &self,
+        sess: Arc<BgpSessionDesc>,
+        offer: BgpSessionId,
+    ) -> BgpSessionId {
+        self.rib.read().await.register_session(sess, offer).await
     }
     pub fn run(
         &self,
@@ -178,29 +252,29 @@ impl BgpRIBts {
         let mut rsp: std::collections::HashMap<&str, std::collections::HashMap<&str, u64>> =
             std::collections::HashMap::new();
         let mut m: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
-        m.insert("pathes", rib.pathes.len() as u64);
-        m.insert("comms", rib.comms.len() as u64);
-        m.insert("lcomms", rib.lcomms.len() as u64);
-        m.insert("extcomms", rib.extcomms.len() as u64);
-        m.insert("attrs", rib.attrs.len() as u64);
-        m.insert("clusters", rib.clusters.len() as u64);
-        rsp.insert("stores", m);
+        m.insert(KEY_PATHES, rib.pathes.len() as u64);
+        m.insert(KEY_COMMUNITIES, rib.comms.len() as u64);
+        m.insert(KEY_LARGE_COMMUNITIES, rib.lcomms.len() as u64);
+        m.insert(KEY_EXT_COMMUNITIES, rib.extcomms.len() as u64);
+        m.insert(KEY_ATTRS, rib.attrs.len() as u64);
+        m.insert(KEY_CLUSTERS, rib.clusters.len() as u64);
+        rsp.insert(KEY_STORES, m);
         let mut m: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
-        m.insert("ipv4u", rib.ipv4u.len() as u64);
-        m.insert("ipv4m", rib.ipv4m.len() as u64);
-        m.insert("ipv4lu", rib.ipv4lu.len() as u64);
-        m.insert("vpnv4u", rib.vpnv4u.len() as u64);
-        m.insert("vpnv4m", rib.vpnv4m.len() as u64);
-        m.insert("ipv6u", rib.ipv6u.len() as u64);
-        m.insert("ipv6lu", rib.ipv6lu.len() as u64);
-        m.insert("vpnv6u", rib.vpnv6u.len() as u64);
-        m.insert("vpnv6m", rib.vpnv6m.len() as u64);
-        m.insert("l2vpls", rib.l2vpls.len() as u64);
-        m.insert("mvpn", rib.mvpn.len() as u64);
-        m.insert("evpn", rib.evpn.len() as u64);
-        m.insert("fs4u", rib.fs4u.len() as u64);
-        m.insert("ipv4mdt", rib.ipv4mdt.len() as u64);
-        m.insert("ipv6mdt", rib.ipv6mdt.len() as u64);
+        m.insert(KEY_IPV4U, rib.ipv4u.len() as u64);
+        m.insert(KEY_IPV4M, rib.ipv4m.len() as u64);
+        m.insert(KEY_IPV4LU, rib.ipv4lu.len() as u64);
+        m.insert(KEY_VPNV4U, rib.vpnv4u.len() as u64);
+        m.insert(KEY_VPNV4M, rib.vpnv4m.len() as u64);
+        m.insert(KEY_IPV6U, rib.ipv6u.len() as u64);
+        m.insert(KEY_IPV6LU, rib.ipv6lu.len() as u64);
+        m.insert(KEY_VPNV6U, rib.vpnv6u.len() as u64);
+        m.insert(KEY_VPNV6M, rib.vpnv6m.len() as u64);
+        m.insert(KEY_L2VPLS, rib.l2vpls.len() as u64);
+        m.insert(KEY_MVPN, rib.mvpn.len() as u64);
+        m.insert(KEY_EVPN, rib.evpn.len() as u64);
+        m.insert(KEY_FS4U, rib.fs4u.len() as u64);
+        m.insert(KEY_IPV4MDT, rib.ipv4mdt.len() as u64);
+        m.insert(KEY_IPV6MDT, rib.ipv6mdt.len() as u64);
         rsp.insert("ribs", m);
         let mut m: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
         m.insert("updates", rib.cnt_updates);
@@ -211,10 +285,7 @@ impl BgpRIBts {
                 .status(StatusCode::OK)
                 .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_JSON)
                 .body(v.into()),
-            Err(e) => Response::builder()
-                .status(StatusCode::from_u16(500).unwrap())
-                .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_PLAIN)
-                .body(format!("Error: {:?}", e).into()),
+            Err(e) => http_err(e),
         }
     }
     pub fn jsontabrib<
@@ -230,10 +301,7 @@ impl BgpRIBts {
                 .status(StatusCode::OK)
                 .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_JSON)
                 .body(v.into()),
-            Err(e) => Response::builder()
-                .status(StatusCode::from_u16(500).unwrap())
-                .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_PLAIN)
-                .body(format!("Error: {:?}", e).into()),
+            Err(e) => http_err(e),
         }
     }
     pub async fn say_jsonrib(
@@ -250,7 +318,7 @@ impl BgpRIBts {
                     .body("Operation timed out".into());
             }
         };
-        let mut params = RibResponseParams::new(0, 1000, 10, false);
+        let mut params = RibResponseParams::default();
         let mut filter = ribfilter::RouteFilter::new();
         let paramshm = get_url_params(req);
         params.extract_params(&paramshm);
@@ -258,22 +326,132 @@ impl BgpRIBts {
             filter.parse(s.as_str());
         };
         match queryrib {
-            "ipv4u" => BgpRIBts::jsontabrib(&rib.ipv4u, &filter, params),
-            "ipv4m" => BgpRIBts::jsontabrib(&rib.ipv4m, &filter, params),
-            "ipv4lu" => BgpRIBts::jsontabrib(&rib.ipv4lu, &filter, params),
-            "vpnv4u" => BgpRIBts::jsontabrib(&rib.vpnv4u, &filter, params),
-            "vpnv4m" => BgpRIBts::jsontabrib(&rib.vpnv4m, &filter, params),
-            "ipv6u" => BgpRIBts::jsontabrib(&rib.ipv6u, &filter, params),
-            "ipv6lu" => BgpRIBts::jsontabrib(&rib.ipv6lu, &filter, params),
-            "vpnv6u" => BgpRIBts::jsontabrib(&rib.vpnv6u, &filter, params),
-            "vpnv6m" => BgpRIBts::jsontabrib(&rib.vpnv6m, &filter, params),
-            "l2vpls" => BgpRIBts::jsontabrib(&rib.l2vpls, &filter, params),
-            "mvpn" => BgpRIBts::jsontabrib(&rib.mvpn, &filter, params),
-            "evpn" => BgpRIBts::jsontabrib(&rib.evpn, &filter, params),
-            "fs4u" => BgpRIBts::jsontabrib(&rib.fs4u, &filter, params),
-            "ipv4mdt" => BgpRIBts::jsontabrib(&rib.ipv4mdt, &filter, params),
-            "ipv6mdt" => BgpRIBts::jsontabrib(&rib.ipv6mdt, &filter, params),
+            KEY_IPV4U => BgpRIBts::jsontabrib(&rib.ipv4u, &filter, params),
+            KEY_IPV4M => BgpRIBts::jsontabrib(&rib.ipv4m, &filter, params),
+            KEY_IPV4LU => BgpRIBts::jsontabrib(&rib.ipv4lu, &filter, params),
+            KEY_VPNV4U => BgpRIBts::jsontabrib(&rib.vpnv4u, &filter, params),
+            KEY_VPNV4M => BgpRIBts::jsontabrib(&rib.vpnv4m, &filter, params),
+            KEY_IPV6U => BgpRIBts::jsontabrib(&rib.ipv6u, &filter, params),
+            KEY_IPV6LU => BgpRIBts::jsontabrib(&rib.ipv6lu, &filter, params),
+            KEY_VPNV6U => BgpRIBts::jsontabrib(&rib.vpnv6u, &filter, params),
+            KEY_VPNV6M => BgpRIBts::jsontabrib(&rib.vpnv6m, &filter, params),
+            KEY_L2VPLS => BgpRIBts::jsontabrib(&rib.l2vpls, &filter, params),
+            KEY_MVPN => BgpRIBts::jsontabrib(&rib.mvpn, &filter, params),
+            KEY_EVPN => BgpRIBts::jsontabrib(&rib.evpn, &filter, params),
+            KEY_FS4U => BgpRIBts::jsontabrib(&rib.fs4u, &filter, params),
+            KEY_IPV4MDT => BgpRIBts::jsontabrib(&rib.ipv4mdt, &filter, params),
+            KEY_IPV6MDT => BgpRIBts::jsontabrib(&rib.ipv6mdt, &filter, params),
             _ => BgpRIBts::jsontabrib(&rib.ipv4u, &filter, params),
+        }
+    }
+    pub fn csvtabrib<
+        T: serde::Serialize + ribfilter::FilterMatchRoute + BgpRIBKey + std::string::ToString,
+    >(
+        rib: &BgpRIBSafi<T>,
+        filter: &ribfilter::RouteFilter,
+        params: RibResponseParams,
+        fname: Option<&str>,
+    ) -> Result<Response<Body>, hyper::http::Error> {
+        let rsp = RibResponse::<T>::new(rib, filter, params);
+        let mut buf = bytes::BytesMut::new();
+        let mut header: Vec<&'static str> = vec!["TIME", "ROUTE"];
+        header.extend_from_slice(&BgpAttrEntry::COLS);
+        header.extend_from_slice(&BgpAttrs::COLS);
+        for c in header.iter().enumerate() {
+            if c.0 > 0 {
+                if let Err(e) = write!(&mut buf, "\t") {
+                    return http_err(e);
+                }
+            }
+            if let Err(e) = write!(&mut buf, "{}", *c.1) {
+                return http_err(e);
+            }
+        }
+        if let Err(e) = writeln!(&mut buf, "") {
+            return http_err(e);
+        }
+        for (k, v) in rsp.iter() {
+            let v1 = BSEItems::new(v, &rsp.params);
+            if v1.is_empty() {
+                continue;
+            }
+            for (sid, v) in v1.bse.items.iter() {
+                if !rsp.params.filter.filter_session(*sid) {
+                    continue;
+                }
+                let v2 = BPEItems::new(v, &rsp.params);
+                if v2.is_empty() {
+                    continue;
+                }
+                for (_, h) in v2.bpe.items.iter() {
+                    let v = BAHItems::new(h, &rsp.params);
+                    if v.is_empty() {
+                        continue;
+                    }
+                    if !rsp.params.filter.filter_path_e(h) {
+                        continue;
+                    }
+                    for (ts, v) in v.bah.items.iter() {
+                        if !rsp.params.filter.filter_ah(ts, v) {
+                            continue;
+                        }
+                        if let Err(e) = writeln!(&mut buf, "{}\t{}\t{}", ts, k, v) {
+                            return http_err(e);
+                        }
+                    }
+                }
+            }
+        }
+        let mut rsp = Response::builder()
+            .status(StatusCode::OK)
+            .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_PLAIN);
+        if let Some(fnm) = fname {
+            rsp = rsp.header(
+                HTTP_CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", fnm),
+            )
+        }
+        rsp.body(buf.freeze().into())
+    }
+    pub async fn say_csvrib(
+        &self,
+        queryrib: &str,
+        req: &Request<Body>,
+        fname: Option<&str>,
+    ) -> Result<Response<Body>, hyper::http::Error> {
+        let rib = match timeout(self.locktimeout, self.rib.read()).await {
+            Ok(r) => r,
+            Err(_) => {
+                return Response::builder()
+                    .status(StatusCode::from_u16(408).unwrap())
+                    .header(HTTP_CONTENT_TYPE, HTTP_CT_TEXT_PLAIN)
+                    .body("Operation timed out".into());
+            }
+        };
+        let mut params = RibResponseParams::default();
+        let mut filter = ribfilter::RouteFilter::new();
+        let paramshm = get_url_params(req);
+        params.extract_params(&paramshm);
+        if let Some(s) = get_url_param::<String>(&paramshm, "filter") {
+            filter.parse(s.as_str());
+        };
+        match queryrib {
+            KEY_IPV4U => BgpRIBts::csvtabrib(&rib.ipv4u, &filter, params, fname),
+            KEY_IPV4M => BgpRIBts::csvtabrib(&rib.ipv4m, &filter, params, fname),
+            KEY_IPV4LU => BgpRIBts::csvtabrib(&rib.ipv4lu, &filter, params, fname),
+            KEY_VPNV4U => BgpRIBts::csvtabrib(&rib.vpnv4u, &filter, params, fname),
+            KEY_VPNV4M => BgpRIBts::csvtabrib(&rib.vpnv4m, &filter, params, fname),
+            KEY_IPV6U => BgpRIBts::csvtabrib(&rib.ipv6u, &filter, params, fname),
+            KEY_IPV6LU => BgpRIBts::csvtabrib(&rib.ipv6lu, &filter, params, fname),
+            KEY_VPNV6U => BgpRIBts::csvtabrib(&rib.vpnv6u, &filter, params, fname),
+            KEY_VPNV6M => BgpRIBts::csvtabrib(&rib.vpnv6m, &filter, params, fname),
+            KEY_L2VPLS => BgpRIBts::csvtabrib(&rib.l2vpls, &filter, params, fname),
+            KEY_MVPN => BgpRIBts::csvtabrib(&rib.mvpn, &filter, params, fname),
+            KEY_EVPN => BgpRIBts::csvtabrib(&rib.evpn, &filter, params, fname),
+            KEY_FS4U => BgpRIBts::csvtabrib(&rib.fs4u, &filter, params, fname),
+            KEY_IPV4MDT => BgpRIBts::csvtabrib(&rib.ipv6mdt, &filter, params, fname),
+            KEY_IPV6MDT => BgpRIBts::csvtabrib(&rib.ipv6mdt, &filter, params, fname),
+            _ => BgpRIBts::csvtabrib(&rib.ipv4u, &filter, params, fname),
         }
     }
 }

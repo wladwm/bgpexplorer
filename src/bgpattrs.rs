@@ -1,8 +1,11 @@
 use crate::bgprib::BgpRIB;
 use serde::ser::SerializeStruct;
+use std::fmt::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
 use zettabgp::prelude::*;
+
+const FMT_SEP: &'static str = "\t";
 
 lazy_static! {
     static ref RIB: Mutex<Option<BgpRIB>> = Mutex::new(None);
@@ -32,6 +35,84 @@ pub struct BgpAttrs {
     pub originator: Option<std::net::IpAddr>,
     pub clusterlist: Option<Arc<BgpClusterList>>,
     pub pmsi_ta: Option<Arc<BgpPMSITunnel>>,
+}
+impl BgpAttrs {
+    pub const COLS: [&str; 13] = [
+        "origin",
+        "nexthop",
+        "aspath",
+        "communities",
+        "large_communities",
+        "ext_communities",
+        "med",
+        "localpref",
+        "atomic_aggregate",
+        "aggregator_as",
+        "originator",
+        "clusterlist",
+        "PMSI_tunnel",
+    ];
+    pub fn new() -> BgpAttrs {
+        BgpAttrs {
+            origin: BgpAttrOrigin::Incomplete,
+            nexthop: BgpAddr::None,
+            aspath: Arc::new(BgpASpath::new()),
+            comms: Arc::new(BgpCommunityList::new()),
+            lcomms: Arc::new(BgpLargeCommunityList::new()),
+            extcomms: Arc::new(BgpExtCommunityList::new()),
+            med: None,
+            localpref: None,
+            atomicaggregate: None,
+            aggregatoras: None,
+            originator: None,
+            clusterlist: None,
+            pmsi_ta: None,
+        }
+    }
+}
+impl std::fmt::Display for BgpAttrs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        self.origin.fmt(f)?;
+        f.write_str(FMT_SEP)?;
+        self.nexthop.fmt(f)?;
+        f.write_str(FMT_SEP)?;
+        self.aspath.fmt(f)?;
+        f.write_str(FMT_SEP)?;
+        self.comms.fmt(f)?;
+        f.write_str(FMT_SEP)?;
+        self.lcomms.fmt(f)?;
+        f.write_str(FMT_SEP)?;
+        self.extcomms.fmt(f)?;
+        f.write_str(FMT_SEP)?;
+        if let Some(m) = &self.med {
+            write!(f, "MED={}", *m)?;
+        }
+        f.write_str(FMT_SEP)?;
+        if let Some(m) = &self.localpref {
+            write!(f, "LP={}", *m)?;
+        }
+        f.write_str(FMT_SEP)?;
+        if let Some(m) = &self.atomicaggregate {
+            m.fmt(f)?;
+        }
+        f.write_str(FMT_SEP)?;
+        if let Some(m) = &self.aggregatoras {
+            m.fmt(f)?;
+        }
+        f.write_str(FMT_SEP)?;
+        if let Some(m) = &self.originator {
+            m.fmt(f)?;
+        }
+        f.write_str(FMT_SEP)?;
+        if let Some(m) = &self.clusterlist {
+            m.fmt(f)?;
+        }
+        f.write_str(FMT_SEP)?;
+        if let Some(m) = &self.pmsi_ta {
+            m.fmt(f)?;
+        }
+        Ok(())
+    }
 }
 enum BgpAttrsField {
     Origin,
@@ -338,25 +419,6 @@ impl Default for BgpAttrs {
         Self::new()
     }
 }
-impl BgpAttrs {
-    pub fn new() -> BgpAttrs {
-        BgpAttrs {
-            origin: BgpAttrOrigin::Incomplete,
-            nexthop: BgpAddr::None,
-            aspath: Arc::new(BgpASpath::new()),
-            comms: Arc::new(BgpCommunityList::new()),
-            lcomms: Arc::new(BgpLargeCommunityList::new()),
-            extcomms: Arc::new(BgpExtCommunityList::new()),
-            med: None,
-            localpref: None,
-            atomicaggregate: None,
-            aggregatoras: None,
-            originator: None,
-            clusterlist: None,
-            pmsi_ta: None,
-        }
-    }
-}
 #[derive(Debug, Clone)]
 pub struct BgpAttrEntry {
     pub active: bool,
@@ -364,12 +426,27 @@ pub struct BgpAttrEntry {
     pub labels: Option<MplsLabels>,
 }
 impl BgpAttrEntry {
+    pub const COLS: [&str; 2] = ["active", "labels"];
     pub fn new(act: bool, atr: Arc<BgpAttrs>, lbl: Option<MplsLabels>) -> BgpAttrEntry {
         BgpAttrEntry {
             active: act,
             attrs: atr,
             labels: lbl,
         }
+    }
+}
+impl std::fmt::Display for BgpAttrEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        if self.active {
+            "ACTIVE\t".fmt(f)?
+        } else {
+            "INACTIVE\t".fmt(f)?
+        };
+        if let Some(l) = self.labels.as_ref() {
+            l.fmt(f)?;
+        }
+        f.write_char('\t')?;
+        self.attrs.fmt(f)
     }
 }
 impl serde::Serialize for BgpAttrEntry {
