@@ -54,7 +54,7 @@ pub struct ClickhouseStorage {
 }
 
 //flag: 0-RD;1-Labels;2-PMSI
-const RIB_FLAGS: [(&'static str, u8); 15] = [
+const RIB_FLAGS: [(&'static str, u8); 16] = [
     (BgpRibKind::RIB_IPV4U, 0),
     (BgpRibKind::RIB_IPV4M, 0),
     (BgpRibKind::RIB_IPV4LU, 1),
@@ -68,6 +68,7 @@ const RIB_FLAGS: [(&'static str, u8); 15] = [
     (BgpRibKind::RIB_MVPN, 7),
     (BgpRibKind::RIB_EVPN, 3),
     (BgpRibKind::RIB_FS4U, 0),
+    (BgpRibKind::RIB_FS6U, 0),
     (BgpRibKind::RIB_IPV4MDT, 0),
     (BgpRibKind::RIB_IPV6MDT, 0),
 ];
@@ -106,6 +107,7 @@ ENGINE = MergeTree() primary key (When,SessionId,Route,PathId) ORDER BY (When,Se
 
 drop table bgprib_evpn;
 drop table bgprib_fs4u;
+drop table bgprib_fs6u;
 drop table bgprib_ipv4lu;
 drop table bgprib_ipv4m;
 drop table bgprib_ipv4mdt;
@@ -908,6 +910,10 @@ AggAs Nullable(String),Originator Nullable(String),ClusterList Array(String)")?;
                 self.out_upd(BgpRibKind::RIB_FS4U, session, rattr, when, v)
                     .await
             }
+            BgpAddrs::FS6U(v) => {
+                self.out_upd(BgpRibKind::RIB_FS6U, session, rattr, when, v)
+                    .await
+            }
             BgpAddrs::IPV4UP(v) => {
                 self.out_upd_path(BgpRibKind::RIB_IPV4U, session, rattr, when, v)
                     .await
@@ -977,6 +983,7 @@ AggAs Nullable(String),Originator Nullable(String),ClusterList Array(String)")?;
             BgpAddrs::MVPN(v) => self.out_wdr(BgpRibKind::RIB_MVPN, session, when, v).await,
             BgpAddrs::EVPN(v) => self.out_wdr(BgpRibKind::RIB_EVPN, session, when, v).await,
             BgpAddrs::FS4U(v) => self.out_wdr(BgpRibKind::RIB_FS4U, session, when, v).await,
+            BgpAddrs::FS6U(v) => self.out_wdr(BgpRibKind::RIB_FS6U, session, when, v).await,
             BgpAddrs::IPV4UP(v) => {
                 self.out_wdr_path(BgpRibKind::RIB_IPV4U, session, when, v)
                     .await

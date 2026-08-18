@@ -303,6 +303,34 @@ impl FilterMatchRoute for BgpAddrV6 {
         }
     }
 }
+impl FilterMatchRoute for FS6 {
+    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        fi.match_ipv6(&self.ipv6)
+    }
+    fn match_super_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        fi.match_super_ipv6(&self.ipv6)
+    }
+    fn len(&self) -> usize {
+        self.ipv6.prefixlen as usize
+    }
+    fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
+        match fi {
+            FilterItem::V6(ref n) => Some(
+                BgpAddrV6::new(n.range_first(), n.prefixlen).into()..=BgpAddrV6::new(n.range_last(), 128).into(),
+            ),
+            _ => None,
+        }
+    }
+    fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
+        match fi {
+            FilterItem::V6(ref n) => Some(
+                BgpAddrV6::new(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0).into()
+                    ..=BgpAddrV6::new(n.range_last(), 128).into(),
+            ),
+            _ => None,
+        }
+    }
+}
 impl FilterMatchRoute for BgpAddrL2 {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
         match fi {
@@ -451,7 +479,7 @@ impl FilterMatchRoute for BgpMdtV6 {
         FilterItemMatchResult::multi(&[self.addr.match_item(fi), fi.match_addr_v6(&self.group)])
     }
 }
-impl FilterMatchRoute for BgpFlowSpec<BgpAddrV4> {
+impl<T: FilterMatchRoute + FSItem<T>> FilterMatchRoute for BgpFlowSpec<T> {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
         let v: Vec<_> = self
             .items

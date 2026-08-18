@@ -31,6 +31,7 @@ pub enum BgpRibKind {
     MVpn,
     EVpn,
     Fs4u,
+    Fs6u,
     IpV4mdt,
     Ipv6mdt,
 }
@@ -48,6 +49,7 @@ impl BgpRibKind {
     pub const RIB_MVPN: &'static str = "mvpn";
     pub const RIB_EVPN: &'static str = "evpn";
     pub const RIB_FS4U: &'static str = "fs4u";
+    pub const RIB_FS6U: &'static str = "fs6u";
     pub const RIB_IPV4MDT: &'static str = "ipv4mdt";
     pub const RIB_IPV6MDT: &'static str = "ipv6mdt";
     pub fn from_bgp_addrs(addrs: &BgpAddrs) -> Option<BgpRibKind> {
@@ -81,7 +83,7 @@ impl BgpRibKind {
             BgpAddrs::MVPN(_) => Some(BgpRibKind::MVpn),
             BgpAddrs::EVPN(_) => Some(BgpRibKind::EVpn),
             BgpAddrs::FS4U(_) => Some(BgpRibKind::Fs4u),
-            BgpAddrs::FS6U(_) => None,
+            BgpAddrs::FS6U(_) => Some(BgpRibKind::Fs6u),
             BgpAddrs::FSV4U(_) => None,
         }
     }
@@ -108,6 +110,7 @@ impl std::str::FromStr for BgpRibKind {
             Self::RIB_MVPN => Ok(BgpRibKind::MVpn),
             Self::RIB_EVPN => Ok(BgpRibKind::EVpn),
             Self::RIB_FS4U => Ok(BgpRibKind::Fs4u),
+            Self::RIB_FS6U => Ok(BgpRibKind::Fs6u),
             Self::RIB_IPV4MDT => Ok(BgpRibKind::IpV4mdt),
             Self::RIB_IPV6MDT => Ok(BgpRibKind::Ipv6mdt),
             _ => Err(BgpError::static_str("Invalid RIB kind")),
@@ -130,6 +133,7 @@ impl std::fmt::Display for BgpRibKind {
             BgpRibKind::MVpn => f.write_str(Self::RIB_MVPN),
             BgpRibKind::EVpn => f.write_str(Self::RIB_EVPN),
             BgpRibKind::Fs4u => f.write_str(Self::RIB_FS4U),
+            BgpRibKind::Fs6u => f.write_str(Self::RIB_FS6U),
             BgpRibKind::IpV4mdt => f.write_str(Self::RIB_IPV4MDT),
             BgpRibKind::Ipv6mdt => f.write_str(Self::RIB_IPV6MDT),
         }
@@ -318,6 +322,12 @@ impl BgpRIBKey for BgpMdtV6 {
     }
 }
 impl BgpRIBKey for BgpFlowSpec<BgpAddrV4> {
+    type Inner = Infallible;
+    fn inner_string(&self) -> String {
+        self.to_string()
+    }
+}
+impl BgpRIBKey for BgpFlowSpec<FS6> {
     type Inner = Infallible;
     fn inner_string(&self) -> String {
         self.to_string()
@@ -925,6 +935,7 @@ pub struct BgpRIB {
     pub mvpn: BgpRIBSafi<BgpMVPN>,
     pub evpn: BgpRIBSafi<BgpEVPN>,
     pub fs4u: BgpRIBSafi<BgpFlowSpec<BgpAddrV4>>,
+    pub fs6u: BgpRIBSafi<BgpFlowSpec<FS6>>,
     pub ipv4mdt: BgpRIBSafi<WithRd<BgpMdtV4>>,
     pub ipv6mdt: BgpRIBSafi<WithRd<BgpMdtV6>>,
     pub cnt_updates: u64,
@@ -970,6 +981,7 @@ impl BgpRIB {
             mvpn: BgpRIBSafi::from_config(cfg),
             evpn: BgpRIBSafi::from_config(cfg),
             fs4u: BgpRIBSafi::from_config(cfg),
+            fs6u: BgpRIBSafi::from_config(cfg),
             ipv4mdt: BgpRIBSafi::from_config(cfg),
             ipv6mdt: BgpRIBSafi::from_config(cfg),
             cnt_updates: 0,
@@ -1032,6 +1044,7 @@ impl BgpRIB {
         ciborium::ser::into_writer(&self.fs4u.items, file.by_ref())?;
         ciborium::ser::into_writer(&self.ipv4mdt.items, file.by_ref())?;
         ciborium::ser::into_writer(&self.ipv6mdt.items, file.by_ref())?;
+        ciborium::ser::into_writer(&self.fs6u.items, file.by_ref())?;
         Ok(())
     }
     pub async fn shutdown(&self) {
@@ -1074,6 +1087,7 @@ impl BgpRIB {
         self.mvpn.clear();
         self.evpn.clear();
         self.fs4u.clear();
+        self.fs6u.clear();
         self.ipv4mdt.clear();
         self.ipv6mdt.clear();
         self.attrs.clear();
@@ -1109,6 +1123,7 @@ impl BgpRIB {
         let fs4u = ciborium::de::from_reader(&mut fl)?;
         let ipv4mdt = ciborium::de::from_reader(&mut fl)?;
         let ipv6mdt = ciborium::de::from_reader(&mut fl)?;
+        let fs6u = ciborium::de::from_reader(&mut fl)?;
         let mut rib = rib_take();
         rib.ipv4u.assign(ipv4u);
         rib.ipv4m.assign(ipv4m);
@@ -1125,6 +1140,7 @@ impl BgpRIB {
         rib.fs4u.assign(fs4u);
         rib.ipv4mdt.assign(ipv4mdt);
         rib.ipv6mdt.assign(ipv6mdt);
+        rib.fs6u.assign(fs6u);
         Ok(rib)
     }
     pub fn handle_withdraws(&mut self, session: BgpSessionId, withdraws: Arc<BgpAddrs>) {
@@ -1142,6 +1158,7 @@ impl BgpRIB {
             BgpAddrs::MVPN(v) => self.mvpn.handle_withdraws_afi(session, v),
             BgpAddrs::EVPN(v) => self.evpn.handle_withdraws_afi(session, v),
             BgpAddrs::FS4U(v) => self.fs4u.handle_withdraws_afi(session, v),
+            BgpAddrs::FS6U(v) => self.fs6u.handle_withdraws_afi(session, v),
             BgpAddrs::IPV4UP(v) => self.ipv4u.handle_withdraws_afi_pathid(session, v),
             BgpAddrs::IPV4MP(v) => self.ipv4m.handle_withdraws_afi_pathid(session, v),
             BgpAddrs::IPV4LUP(v) => self.ipv4lu.handle_withdraws_afi_pathid(session, v),
@@ -1183,6 +1200,7 @@ impl BgpRIB {
             BgpAddrs::MVPN(v) => self.mvpn.handle_updates_afi(session, v, rattr),
             BgpAddrs::EVPN(v) => self.evpn.handle_updates_afi(session, v, rattr),
             BgpAddrs::FS4U(v) => self.fs4u.handle_updates_afi(session, v, rattr),
+            BgpAddrs::FS6U(v) => self.fs6u.handle_updates_afi(session, v, rattr),
             BgpAddrs::IPV4UP(v) => self.ipv4u.handle_updates_afi_pathid(session, v, rattr),
             BgpAddrs::IPV4MP(v) => self.ipv4m.handle_updates_afi_pathid(session, v, rattr),
             BgpAddrs::IPV4LUP(v) => self.ipv4lu.handle_updates_afi_pathid(session, v, rattr),

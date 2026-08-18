@@ -1,3 +1,6 @@
+### 0.4.1 (2026-08-18)
+* ipv6 flowspec added.
+
 ### 0.4.0 (2026-08-14)
 * implemented external storage to save route updates history (textfiles, mysql, clickhouse)
 

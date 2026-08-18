@@ -481,6 +481,7 @@ impl ProtoPeer {
         vec![
             BgpCapability::SafiIPv4u,
             BgpCapability::SafiIPv4fu,
+            BgpCapability::SafiIPv6fu,
             BgpCapability::SafiVPNv4fu,
             BgpCapability::SafiIPv4m,
             BgpCapability::SafiIPv4lu,

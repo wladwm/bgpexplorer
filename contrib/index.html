@@ -453,7 +453,7 @@
       }
       let activeribs = new Array();
       let server_ribs = server_statistics["ribs"];
-      let ribs = ['ipv4u', 'ipv4m', 'ipv4lu', 'vpnv4u', 'vpnv4m', 'l2vpls', 'ipv6u', 'ipv6m', 'ipv6lu', 'vpnv6u', 'vpnv6m', 'mvpn', 'evpn', 'fs4u', 'ipv4mdt', 'ipv6mdt'];
+      let ribs = ['ipv4u', 'ipv4m', 'ipv4lu', 'vpnv4u', 'vpnv4m', 'l2vpls', 'ipv6u', 'ipv6m', 'ipv6lu', 'vpnv6u', 'vpnv6m', 'mvpn', 'evpn', 'fs4u', 'fs6u', 'ipv4mdt', 'ipv6mdt'];
       ribs.forEach((rnm) => {
         if (rnm in server_ribs) {
           if (server_ribs[rnm] > 0) {

@@ -2,15 +2,12 @@ use super::Storage;
 use crate::bgpattrs::BgpAttrs;
 use crate::bgprib::BgpRIBKey;
 use crate::bgpsvc::{BgpSessionDesc, BgpSessionId};
-use crate::ribfilter::FilterItemMatchResult::No;
-use crate::storage::mysql;
 use crate::timestamp::Timestamp;
 use crate::BgpRibKind;
 use async_trait::async_trait;
 use chrono::{Datelike, Timelike};
 use mysql_async::prelude::*;
-use mysql_async::{FromValueError, Row, TxOpts, Value};
-use std::borrow::Cow;
+use mysql_async::TxOpts;
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::fmt::Write;
@@ -26,7 +23,7 @@ pub struct MysqlStorage {
 }
 
 //flag: 0-RD;1-Labels;2-PMSI
-const RIB_FLAGS: [(&'static str, u8); 15] = [
+const RIB_FLAGS: [(&'static str, u8); 16] = [
     (BgpRibKind::RIB_IPV4U, 0),
     (BgpRibKind::RIB_IPV4M, 0),
     (BgpRibKind::RIB_IPV4LU, 1),
@@ -40,6 +37,7 @@ const RIB_FLAGS: [(&'static str, u8); 15] = [
     (BgpRibKind::RIB_MVPN, 7),
     (BgpRibKind::RIB_EVPN, 3),
     (BgpRibKind::RIB_FS4U, 0),
+    (BgpRibKind::RIB_FS6U, 0),
     (BgpRibKind::RIB_IPV4MDT, 0),
     (BgpRibKind::RIB_IPV6MDT, 0),
 ];
@@ -587,6 +585,10 @@ Med null int,Localpref null int,AtomicAgg null varchar(80),AggAs null varchar(80
                 self.out_upd(BgpRibKind::RIB_FS4U, session, rattr, when, v)
                     .await
             }
+            BgpAddrs::FS6U(v) => {
+                self.out_upd(BgpRibKind::RIB_FS6U, session, rattr, when, v)
+                    .await
+            }
             BgpAddrs::IPV4UP(v) => {
                 self.out_upd_path(BgpRibKind::RIB_IPV4U, session, rattr, when, v)
                     .await
@@ -656,6 +658,7 @@ Med null int,Localpref null int,AtomicAgg null varchar(80),AggAs null varchar(80
             BgpAddrs::MVPN(v) => self.out_wdr(BgpRibKind::RIB_MVPN, session, when, v).await,
             BgpAddrs::EVPN(v) => self.out_wdr(BgpRibKind::RIB_EVPN, session, when, v).await,
             BgpAddrs::FS4U(v) => self.out_wdr(BgpRibKind::RIB_FS4U, session, when, v).await,
+            BgpAddrs::FS6U(v) => self.out_wdr(BgpRibKind::RIB_FS6U, session, when, v).await,
             BgpAddrs::IPV4UP(v) => {
                 self.out_wdr_path(BgpRibKind::RIB_IPV4U, session, when, v)
                     .await

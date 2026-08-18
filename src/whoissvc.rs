@@ -64,10 +64,9 @@ impl WhoisRec {
             );
         };
         WhoisRec {
-            ts: DateTime::<Local>::from_utc(
-                NaiveDateTime::from_timestamp_opt(gts, 0).unwrap_or(*DEF_NDT),
-                *GMT_OFFSET,
-            ),
+            ts: DateTime::from_timestamp(gts, 0)
+                .map(|x| x.into())
+                .unwrap_or_else(|| Local::now()),
             val: vl,
         }
     }

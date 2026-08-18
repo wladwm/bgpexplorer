@@ -1,6 +1,6 @@
 [package]
 name = "bgpexplorer"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Vladimir Melnikov <wlad.w.m@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -19,7 +19,7 @@ mysql = ["mysql_async"]
 whoisreq = ["whois-rust","sled"]
 
 [dependencies]
-zettabgp = { version = "0.4.0", features = ["serde"] }
+zettabgp = { version = "0.4.1", features = ["serde"] }
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-util = { version = "0.7.12", features = ["full"] }
 tokio-stream = { version="0", optional = true }

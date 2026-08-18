@@ -39,6 +39,7 @@ const KEY_L2VPLS: &'static str = "l2vpls";
 const KEY_MVPN: &'static str = "mvpn";
 const KEY_EVPN: &'static str = "evpn";
 const KEY_FS4U: &'static str = "fs4u";
+const KEY_FS6U: &'static str = "fs6u";
 const KEY_IPV4MDT: &'static str = "ipv4mdt";
 const KEY_IPV6MDT: &'static str = "ipv6mdt";
 
@@ -273,6 +274,7 @@ impl BgpRIBts {
         m.insert(KEY_MVPN, rib.mvpn.len() as u64);
         m.insert(KEY_EVPN, rib.evpn.len() as u64);
         m.insert(KEY_FS4U, rib.fs4u.len() as u64);
+        m.insert(KEY_FS6U, rib.fs6u.len() as u64);
         m.insert(KEY_IPV4MDT, rib.ipv4mdt.len() as u64);
         m.insert(KEY_IPV6MDT, rib.ipv6mdt.len() as u64);
         rsp.insert("ribs", m);
@@ -339,6 +341,7 @@ impl BgpRIBts {
             KEY_MVPN => BgpRIBts::jsontabrib(&rib.mvpn, &filter, params),
             KEY_EVPN => BgpRIBts::jsontabrib(&rib.evpn, &filter, params),
             KEY_FS4U => BgpRIBts::jsontabrib(&rib.fs4u, &filter, params),
+            KEY_FS6U => BgpRIBts::jsontabrib(&rib.fs6u, &filter, params),
             KEY_IPV4MDT => BgpRIBts::jsontabrib(&rib.ipv4mdt, &filter, params),
             KEY_IPV6MDT => BgpRIBts::jsontabrib(&rib.ipv6mdt, &filter, params),
             _ => BgpRIBts::jsontabrib(&rib.ipv4u, &filter, params),
@@ -449,6 +452,7 @@ impl BgpRIBts {
             KEY_MVPN => BgpRIBts::csvtabrib(&rib.mvpn, &filter, params, fname),
             KEY_EVPN => BgpRIBts::csvtabrib(&rib.evpn, &filter, params, fname),
             KEY_FS4U => BgpRIBts::csvtabrib(&rib.fs4u, &filter, params, fname),
+            KEY_FS6U => BgpRIBts::csvtabrib(&rib.fs6u, &filter, params, fname),
             KEY_IPV4MDT => BgpRIBts::csvtabrib(&rib.ipv6mdt, &filter, params, fname),
             KEY_IPV6MDT => BgpRIBts::csvtabrib(&rib.ipv6mdt, &filter, params, fname),
             _ => BgpRIBts::csvtabrib(&rib.ipv4u, &filter, params, fname),
