@@ -17,6 +17,17 @@ extern crate anyhow;
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 
+#[cfg(feature = "rusty-alloc")]
+#[global_allocator]
+static GLOBAL: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
+
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: Jemalloc = tikv_jemallocator::Jemalloc;
+
 use futures::SinkExt;
 use hyper::header::{self, HeaderValue};
 use hyper::service::{make_service_fn, service_fn};
@@ -32,17 +43,14 @@ mod bgpattrs;
 mod bgppeer;
 mod bgprib;
 use bgprib::*;
+mod bgpsvc;
 mod bmppeer;
 mod service;
-use service::*;
-mod bgpsvc;
 use bgpsvc::*;
-#[cfg(feature = "whoisreq")]
-mod whoissvc;
-#[cfg(feature = "whoisreq")]
-use whoissvc::*;
 mod config;
 use config::*;
+#[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+mod extsvc;
 mod ribfilter;
 mod ribservice;
 mod storage;
@@ -70,33 +78,25 @@ async fn simple_file_send(filename: &str) -> Result<Response<Body>, hyper::Error
     Ok(not_found())
 }
 
+#[derive(Clone)]
 pub struct Svc {
     pub httproot: Arc<String>,
     pub bgp: Option<Arc<BgpSvr>>,
-    #[cfg(feature = "whoisreq")]
-    pub whois: Arc<WhoisSvr>,
+    #[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+    pub ext: Arc<extsvc::ExtSvr>,
 }
-impl Clone for Svc {
-    fn clone(&self) -> Svc {
-        Svc {
-            httproot: self.httproot.clone(),
-            bgp: self.bgp.clone(),
-            #[cfg(feature = "whoisreq")]
-            whois: self.whois.clone(),
-        }
-    }
-}
+
 impl Svc {
     pub fn new(
         http_root: Arc<String>,
         b: Arc<BgpSvr>,
-        #[cfg(feature = "whoisreq")] w: Arc<WhoisSvr>,
+        #[cfg(any(feature = "whoisreq", feature = "dnsreq"))] ext: Arc<extsvc::ExtSvr>,
     ) -> Svc {
         Svc {
             httproot: http_root,
             bgp: Some(b),
-            #[cfg(feature = "whoisreq")]
-            whois: w,
+            #[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+            ext,
         }
     }
     pub async fn shutdown(&self) {
@@ -157,11 +157,11 @@ impl Svc {
                 match urlparts[2] {
                     #[cfg(feature = "whoisreq")]
                     "whois" => {
-                        return self.whois.response_fn(&req).await;
+                        return self.ext.response_fn(&req).await;
                     }
-                    #[cfg(feature = "whoisreq")]
+                    #[cfg(feature = "dnsreq")]
                     "dns" => {
-                        return self.whois.response_fn(&req).await;
+                        return self.ext.response_fn(&req).await;
                     }
                     "ping" => {
                         return Ok(Response::new(Body::from("pong")));
@@ -302,8 +302,8 @@ async fn main() -> anyhow::Result<()> {
     let svc = Svc::new(
         Arc::new(conf.httproot.clone()),
         msvr.clone(),
-        #[cfg(feature = "whoisreq")]
-        Arc::new(WhoisSvr::new(&conf)),
+        #[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+        Arc::new(extsvc::ExtSvr::new(&conf)?),
     );
 
     let tck1 = {

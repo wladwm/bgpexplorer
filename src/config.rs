@@ -100,6 +100,11 @@ impl std::convert::Into<std::time::Duration> for Dur {
         self.0
     }
 }
+impl std::convert::Into<chrono::Duration> for Dur {
+    fn into(self) -> chrono::Duration {
+        chrono::Duration::milliseconds(self.0.as_millis() as i64)
+    }
+}
 impl std::fmt::Display for Dur {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let mut msc = self.0.as_millis();
@@ -135,7 +140,7 @@ impl std::fmt::Display for Dur {
         }
     }
 }
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, serde::Serialize)]
 pub enum BgpSessionState {
     Unknown,
     Idle,
@@ -435,6 +440,10 @@ impl ProtoPeer {
                             "vpnv6u" => caps.push(BgpCapability::SafiVPNv6u),
                             "vpnv6m" => caps.push(BgpCapability::SafiVPNv6m),
                             "ipv6mdt" => caps.push(BgpCapability::SafiIPv6mdt),
+                            "fs4" => caps.push(BgpCapability::SafiIPv4fu),
+                            "fsv4" => caps.push(BgpCapability::SafiVPNv4fu),
+                            "fs6" => caps.push(BgpCapability::SafiIPv6fu),
+                            "fsv6" => caps.push(BgpCapability::SafiVPNv6fu),
                             "addpath" => addpath = true,
                             x => warn!("Unknown capability code: {}", x),
                         }
@@ -480,6 +489,7 @@ impl ProtoPeer {
     pub fn all_caps(asn: u32) -> Vec<BgpCapability> {
         vec![
             BgpCapability::SafiIPv4u,
+            BgpCapability::SafiIPv6u,
             BgpCapability::SafiIPv4fu,
             BgpCapability::SafiIPv6fu,
             BgpCapability::SafiVPNv4fu,
@@ -490,6 +500,7 @@ impl ProtoPeer {
             BgpCapability::SafiVPNv4u,
             BgpCapability::SafiVPNv4m,
             BgpCapability::SafiVPNv6u,
+            BgpCapability::SafiVPNv6fu,
             BgpCapability::SafiVPNv6m,
             BgpCapability::SafiIPv4mvpn,
             BgpCapability::SafiVPLS,
@@ -567,6 +578,20 @@ impl ProtoPeer {
     }
 }
 
+#[cfg(feature = "whoisreq")]
+#[derive(Debug, Clone)]
+pub struct WhoisConfig {
+    pub config: WhoIs,
+    pub timeout: Dur,
+}
+
+#[cfg(feature = "dnsreq")]
+#[derive(Debug, Clone)]
+pub struct DnsConfig {
+    pub dnses: Vec<std::net::SocketAddr>,
+    pub timeout: Dur,
+}
+
 #[derive(Debug, Clone)]
 pub struct SvcConfig {
     pub httplisten: std::net::SocketAddr,
@@ -575,14 +600,14 @@ pub struct SvcConfig {
     pub httptimeout: u64,
     pub timeidx_granularity: u64,
     pub historymode: HistoryChangeMode,
+    #[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+    pub cachedb: String,
+    #[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+    pub cache_valid: Dur,
     #[cfg(feature = "whoisreq")]
-    pub whoisconfig: WhoIs,
-    #[cfg(feature = "whoisreq")]
-    pub whoisdb: String,
-    pub whoisreqtimeout: Dur,
-    pub whoiscache: Dur,
-    pub whoisdnses: Vec<std::net::SocketAddr>,
-    pub dnstimeout: Dur,
+    pub whois: WhoisConfig,
+    #[cfg(feature = "dnsreq")]
+    pub dns: DnsConfig,
     pub peers: Vec<Arc<ProtoPeer>>,
     pub purge_after_withdraws: u64,
     pub purge_every: chrono::Duration,
@@ -822,35 +847,15 @@ impl SvcConfig {
         } else {
             chrono::Duration::minutes(5)
         };
-        let whoisreqtimeout: Dur = if mainsection.contains_key("whois_request_timeout") {
-            match mainsection["whois_request_timeout"] {
-                Some(ref s) => s.parse().unwrap_or(Dur::from_secs(30)),
-                None => Dur::from_secs(30),
-            }
-        } else {
-            Dur::from_secs(30)
-        };
-        let whoiscache: Dur = if mainsection.contains_key("whois_cache_seconds") {
-            match mainsection["whois_cache_seconds"] {
-                Some(ref s) => s.parse().unwrap_or(Dur::from_secs(1800)),
-                None => Dur::from_secs(1800),
-            }
-        } else {
-            Dur::from_secs(1800)
-        };
-        #[cfg(feature = "whoisreq")]
-        let whois: WhoIs = if mainsection.contains_key("whoisjsonconfig") {
-            match mainsection["whoisjsonconfig"] {
-                Some(ref s) => WhoIs::from_path(s).unwrap(),
+        #[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+        let cachedb: String = if mainsection.contains_key("cachedb") {
+            match mainsection["cachedb"] {
+                Some(ref s) => s.to_string(),
                 None => {
-                    return Err(ErrorConfig::from_str("Invalid whoisjsonconfig"));
+                    return Err(ErrorConfig::from_str("Invalid cachedb"));
                 }
             }
-        } else {
-            return Err(ErrorConfig::from_str("Invalid whoisjsonconfig"));
-        };
-        #[cfg(feature = "whoisreq")]
-        let whoisdb: String = if mainsection.contains_key("whoisdb") {
+        } else if mainsection.contains_key("whoisdb") {
             match mainsection["whoisdb"] {
                 Some(ref s) => s.to_string(),
                 None => {
@@ -860,38 +865,74 @@ impl SvcConfig {
         } else {
             "whoiscache.db".to_string()
         };
-        let mut dnses = Vec::<std::net::SocketAddr>::new();
-        if mainsection.contains_key("whoisdns") {
-            match mainsection["whoisdns"] {
-                Some(ref s) => {
-                    for sdns in s.as_str().split(',') {
-                        match sdns.trim().parse() {
-                            Ok(sck) => dnses.push(sck),
-                            Err(_) => match (sdns.trim().to_string() + ":53").parse() {
-                                Ok(sck) => dnses.push(sck),
-                                Err(_) => {
-                                    warn!("Invalid DNS: {}", sdns);
-                                }
-                            },
-                        }
+        #[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+        let cache_valid: Dur = if mainsection.contains_key("cache_valid") {
+            match mainsection["cache_valid"] {
+                Some(ref s) => s.parse().unwrap_or(Dur::from_secs(1800)),
+                None => Dur::from_secs(1800),
+            }
+        } else {
+            Dur::from_secs(1800)
+        };
+        #[cfg(feature = "whoisreq")]
+        let whois = {
+            let timeout: Dur = if mainsection.contains_key("whois_request_timeout") {
+                match mainsection["whois_request_timeout"] {
+                    Some(ref s) => s.parse().unwrap_or(Dur::from_secs(30)),
+                    None => Dur::from_secs(30),
+                }
+            } else {
+                Dur::from_secs(30)
+            };
+            let config: WhoIs = if mainsection.contains_key("whoisjsonconfig") {
+                match mainsection["whoisjsonconfig"] {
+                    Some(ref s) => WhoIs::from_path(s).unwrap(),
+                    None => {
+                        return Err(ErrorConfig::from_str("Invalid whoisjsonconfig"));
                     }
                 }
-                None => {
-                    return Err(ErrorConfig::from_str("Invalid whoisdns"));
-                }
-            }
+            } else {
+                return Err(ErrorConfig::from_str("Invalid whoisjsonconfig"));
+            };
+            WhoisConfig { timeout, config }
         };
-        let mut dnstimeout = Dur::from_secs(5);
-        if mainsection.contains_key("dnstimeout") {
-            if let Some(s) = mainsection["dnstimeout"].as_ref() {
-                match s.parse() {
-                    Ok(dur) => dnstimeout = dur,
-                    Err(_) => {}
+        #[cfg(feature = "dnsreq")]
+        let dns = {
+            let mut dnses = Vec::<std::net::SocketAddr>::new();
+            let dnslist = if mainsection.contains_key("whoisdns") {
+                match mainsection["whoisdns"] {
+                    Some(ref s) => s.as_str(),
+                    None => {
+                        return Err(ErrorConfig::from_str("Invalid dns list"));
+                    }
+                }
+            } else {
+                ""
+            };
+            for sdns in dnslist.split(',') {
+                match sdns.trim().parse() {
+                    Ok(sck) => dnses.push(sck),
+                    Err(_) => match (sdns.trim().to_string() + ":53").parse() {
+                        Ok(sck) => dnses.push(sck),
+                        Err(_) => {
+                            warn!("Invalid DNS: {}", sdns);
+                        }
+                    },
                 }
             }
-        }
-        if dnses.is_empty() {
-            dnses.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53));
+            let mut timeout = Dur::from_secs(5);
+            if mainsection.contains_key("dnstimeout") {
+                if let Some(s) = mainsection["dnstimeout"].as_ref() {
+                    match s.parse() {
+                        Ok(dur) => timeout = dur,
+                        Err(_) => {}
+                    }
+                }
+            }
+            if dnses.is_empty() {
+                dnses.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53));
+            };
+            DnsConfig { dnses, timeout }
         };
         let storage = if mainsection.contains_key("storage") {
             mainsection["storage"].as_ref().map(|s| s.to_string())
@@ -913,14 +954,14 @@ impl SvcConfig {
             httproot,
             historydepth,
             historymode,
+            #[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+            cachedb,
+            #[cfg(any(feature = "whoisreq", feature = "dnsreq"))]
+            cache_valid,
             #[cfg(feature = "whoisreq")]
-            whoisconfig: whois,
-            #[cfg(feature = "whoisreq")]
-            whoisdb,
-            whoisdnses: dnses,
-            dnstimeout,
-            whoisreqtimeout,
-            whoiscache,
+            whois,
+            #[cfg(feature = "dnsreq")]
+            dns,
             purge_after_withdraws,
             purge_every,
             peers,

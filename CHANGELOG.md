@@ -1,3 +1,10 @@
+### 0.5.0 (2026-09-26)
+* allocators added as features.
+* clickhouse storage schema changed.
+* sample python client added - to demonstrate websocket subscription api.
+* vpnv4 and vpnv6 flowspecs added.
+* whois and dns requests reimplemented as separate features.
+
 ### 0.4.1 (2026-08-18)
 * ipv6 flowspec added.
 

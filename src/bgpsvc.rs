@@ -206,6 +206,9 @@ impl BgpUpdateHandler for BgpSvr {
         if let Some(sd) = glck.ss_ids.get(&sessionid) {
             *sd.state.lock().unwrap() = state;
         }
+        if state == BgpSessionState::Idle {
+            self.rib.on_session_down(sessionid).await;
+        }
     }
 }
 impl BgpSvr {
@@ -253,7 +256,7 @@ impl BgpSvr {
                 Ok(acc) => acc,
                 Err(e) => return Err(e),
             };
-            info!("Incoming connected from {}", client.1);
+            info!("Incoming connection from {}", client.1);
             let fpeer: Arc<ProtoPeer> = match self.config.peers.iter().find(|p| {
                 if p.mode == PeerMode::BgpPassive || p.mode == PeerMode::BmpPassive {
                     if let Some(sa) = p.protolisten {
@@ -518,7 +521,7 @@ impl<'a, 'b> BAHItems<'a, 'b> {
             .bah
             .items
             .iter()
-            .any(|x| self.params.filter.filter_ah(x.0, x.1))
+            .any(|x| self.params.filter.filter_ah(&x.0, &x.1))
     }
 }
 impl<'a, 'b> serde::Serialize for BAHItems<'a, 'b> {
@@ -533,7 +536,7 @@ impl<'a, 'b> serde::Serialize for BAHItems<'a, 'b> {
             .items
             .iter()
             .rev()
-            .filter(|x| self.params.filter.filter_ah(x.0, x.1))
+            .filter(|x| self.params.filter.filter_ah(&x.0, &x.1))
             .take(if self.params.filter.maxdepth > 0 {
                 self.params.filter.maxdepth
             } else {
@@ -813,6 +816,9 @@ impl serde::Serialize for BgpSessionDesc {
         let mut state = serializer.serialize_struct("BgpSessionDesc", 2)?;
         state.serialize_field("peer1", &self.peer1)?;
         state.serialize_field("peer2", &self.peer2)?;
+        if let Ok(st) = self.state.lock() {
+            state.serialize_field("state", &*st)?;
+        }
         state.end()
     }
 }
