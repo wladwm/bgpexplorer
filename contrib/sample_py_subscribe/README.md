@@ -1,0 +1,1 @@
+This sample script subscribes for any changes in inet4 unicast BGPExplorer rib via websocket.

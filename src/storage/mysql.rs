@@ -13,7 +13,7 @@ use std::fmt::Display;
 use std::fmt::Write;
 use std::net::IpAddr;
 use std::sync::Arc;
-use zettabgp::prelude::{BgpAddrs, WithPathId};
+use zettabgp::prelude::{BgpAddrs, BgpRD, WithPathId};
 
 pub struct MysqlStorage {
     instance_id: String,
@@ -23,7 +23,7 @@ pub struct MysqlStorage {
 }
 
 //flag: 0-RD;1-Labels;2-PMSI
-const RIB_FLAGS: [(&'static str, u8); 16] = [
+const RIB_FLAGS: [(&'static str, u8); 18] = [
     (BgpRibKind::RIB_IPV4U, 0),
     (BgpRibKind::RIB_IPV4M, 0),
     (BgpRibKind::RIB_IPV4LU, 1),
@@ -38,6 +38,8 @@ const RIB_FLAGS: [(&'static str, u8); 16] = [
     (BgpRibKind::RIB_EVPN, 3),
     (BgpRibKind::RIB_FS4U, 0),
     (BgpRibKind::RIB_FS6U, 0),
+    (BgpRibKind::RIB_FSV4U, 1),
+    (BgpRibKind::RIB_FSV6U, 1),
     (BgpRibKind::RIB_IPV4MDT, 0),
     (BgpRibKind::RIB_IPV6MDT, 0),
 ];
@@ -345,6 +347,57 @@ impl MysqlStorage {
         tx.commit().await?;
         Ok(())
     }
+    async fn out_upd_rd<
+        T: BgpRIBKey + Display + std::marker::Send + std::marker::Sync + 'static,
+    >(
+        &self,
+        ribtype: &'static str,
+        session: BgpSessionId,
+        rattr: Arc<BgpAttrs>,
+        when: Timestamp,
+        rd: BgpRD,
+        v: &[T],
+    ) -> anyhow::Result<()> {
+        let mut buf = bytes::BytesMut::new();
+        let flg = Self::wrsql(&mut buf, ribtype)?;
+        let mut con = self.pool.get_conn().await?;
+        let mut tx = con.start_transaction(self.deftx()).await?;
+        let rdu = rd.to_u64();
+        tx.exec_batch(
+            String::from_utf8_lossy(&buf),
+            v.iter().map(|s| {
+                let mut v = Vec::<mysql_async::Value>::new();
+                v.push(Self::tomydt(&when));
+                v.push(session.into());
+                if flg & 2 > 0 {
+                    v.push(rdu.into());
+                }
+                v.push(s.inner_string().into());
+                v.push(0.into());
+                if flg & 1 > 0 {
+                    match s.getlabels() {
+                        Some(l) => {
+                            v.push(format!("{}", l).into());
+                        }
+                        None => v.push(mysql_async::Value::NULL),
+                    }
+                }
+                v.push(1.into());
+                Self::push_attrs(&mut v, &rattr);
+                if flg & 4 > 0 {
+                    if let Some(m) = rattr.pmsi_ta.as_ref() {
+                        v.push(m.to_string().into());
+                    } else {
+                        v.push(mysql_async::Value::NULL);
+                    }
+                }
+                v
+            }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
     async fn out_upd_path<
         T: BgpRIBKey + Display + std::marker::Send + std::marker::Sync + 'static,
     >(
@@ -427,6 +480,40 @@ impl MysqlStorage {
                             v.push(mysql_async::Value::NULL);
                         }
                     };
+                }
+                v.push(s.inner_string().into());
+                v.push(0.into());
+                v.push(0.into());
+                v
+            }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    async fn out_wdr_rd<
+        T: BgpRIBKey + Display + std::marker::Send + std::marker::Sync + 'static,
+    >(
+        &self,
+        ribtype: &'static str,
+        session: BgpSessionId,
+        when: Timestamp,
+        rd: BgpRD,
+        v: &[T],
+    ) -> anyhow::Result<()> {
+        let mut buf = bytes::BytesMut::new();
+        let flg = Self::wrsqlinact(&mut buf, ribtype)?;
+        let mut con = self.pool.get_conn().await?;
+        let mut tx = con.start_transaction(self.deftx()).await?;
+        let rdu = rd.to_u64();
+        tx.exec_batch(
+            String::from_utf8_lossy(&buf),
+            v.iter().map(|s| {
+                let mut v = Vec::<mysql_async::Value>::new();
+                v.push(Self::tomydt(&when));
+                v.push(session.into());
+                if flg & 2 > 0 {
+                    v.push(rdu.into());
                 }
                 v.push(s.inner_string().into());
                 v.push(0.into());
@@ -585,9 +672,31 @@ Med null int,Localpref null int,AtomicAgg null varchar(80),AggAs null varchar(80
                 self.out_upd(BgpRibKind::RIB_FS4U, session, rattr, when, v)
                     .await
             }
+            BgpAddrs::FSV4U(v) => {
+                self.out_upd_rd(
+                    BgpRibKind::RIB_FSV4U,
+                    session,
+                    rattr,
+                    when,
+                    v.0.clone(),
+                    &v.1,
+                )
+                .await
+            }
             BgpAddrs::FS6U(v) => {
                 self.out_upd(BgpRibKind::RIB_FS6U, session, rattr, when, v)
                     .await
+            }
+            BgpAddrs::FSV6U(v) => {
+                self.out_upd_rd(
+                    BgpRibKind::RIB_FSV6U,
+                    session,
+                    rattr,
+                    when,
+                    v.0.clone(),
+                    &v.1,
+                )
+                .await
             }
             BgpAddrs::IPV4UP(v) => {
                 self.out_upd_path(BgpRibKind::RIB_IPV4U, session, rattr, when, v)
@@ -658,7 +767,15 @@ Med null int,Localpref null int,AtomicAgg null varchar(80),AggAs null varchar(80
             BgpAddrs::MVPN(v) => self.out_wdr(BgpRibKind::RIB_MVPN, session, when, v).await,
             BgpAddrs::EVPN(v) => self.out_wdr(BgpRibKind::RIB_EVPN, session, when, v).await,
             BgpAddrs::FS4U(v) => self.out_wdr(BgpRibKind::RIB_FS4U, session, when, v).await,
+            BgpAddrs::FSV4U(v) => {
+                self.out_wdr_rd(BgpRibKind::RIB_FSV4U, session, when, v.0.clone(), &v.1)
+                    .await
+            }
             BgpAddrs::FS6U(v) => self.out_wdr(BgpRibKind::RIB_FS6U, session, when, v).await,
+            BgpAddrs::FSV6U(v) => {
+                self.out_wdr_rd(BgpRibKind::RIB_FSV6U, session, when, v.0.clone(), &v.1)
+                    .await
+            }
             BgpAddrs::IPV4UP(v) => {
                 self.out_wdr_path(BgpRibKind::RIB_IPV4U, session, when, v)
                     .await

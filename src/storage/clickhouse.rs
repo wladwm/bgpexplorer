@@ -7,20 +7,20 @@ use crate::BgpRibKind;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::task::Poll;
+use futures::FutureExt;
 use futures_util::stream::Stream;
 use klickhouse::bb8::ManageConnection;
 use klickhouse::*;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::fmt::Display;
 use std::fmt::Write;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_stream::StreamExt;
-use zettabgp::afi::MplsLabels;
-use zettabgp::prelude::{BgpAddrs, WithPathId};
+use zettabgp::afi::{BgpAddrV4, BgpAddrV6, MplsLabels};
+use zettabgp::prelude::{BgpAddrs, BgpRD, WithPathId};
 
 #[derive(Clone)]
 pub struct ClickhouseStorageOptions {
@@ -47,30 +47,168 @@ impl std::default::Default for ClickhouseStorageOptions {
 pub struct ClickhouseStorage {
     cso: ClickhouseStorageOptions,
     sessions: tokio::sync::RwLock<BTreeMap<(IpAddr, IpAddr), BgpSessionId>>,
-    sids: std::sync::RwLock<BTreeMap<BgpSessionId, (IpAddr, IpAddr)>>,
+    sids: parking_lot::RwLock<BTreeMap<BgpSessionId, (IpAddr, IpAddr)>>,
     click: klickhouse::ConnectionManager,
     upd: tokio::sync::RwLock<BTreeMap<&'static str, InserterChannel<RibRowU>>>,
     wdr: tokio::sync::RwLock<BTreeMap<&'static str, InserterChannel<RibRowW>>>,
 }
 
+struct RibFields {
+    flags: u8, //flag: 0-RD;1-Labels;2-PMSI
+    route: &'static str,
+    nexthop: &'static str,
+}
+const ROUTE_STR_TYPE: &'static str = "String";
+const ROUTE_IPV4_TYPE: &'static str = "Tuple(IPv4,UInt8)";
+const ROUTE_IPV6_TYPE: &'static str = "Tuple(IPv6,UInt8)";
+const NH_IPV4_TYPE: &'static str = "Nullable(IPv4)";
+const NH_IPV6_TYPE: &'static str = "Nullable(IPv6)";
 //flag: 0-RD;1-Labels;2-PMSI
-const RIB_FLAGS: [(&'static str, u8); 16] = [
-    (BgpRibKind::RIB_IPV4U, 0),
-    (BgpRibKind::RIB_IPV4M, 0),
-    (BgpRibKind::RIB_IPV4LU, 1),
-    (BgpRibKind::RIB_VPNV4U, 3),
-    (BgpRibKind::RIB_VPNV4M, 3),
-    (BgpRibKind::RIB_IPV6U, 0),
-    (BgpRibKind::RIB_IPV6LU, 1),
-    (BgpRibKind::RIB_VPNV6U, 3),
-    (BgpRibKind::RIB_VPNV6M, 3),
-    (BgpRibKind::RIB_L2VPLS, 3),
-    (BgpRibKind::RIB_MVPN, 7),
-    (BgpRibKind::RIB_EVPN, 3),
-    (BgpRibKind::RIB_FS4U, 0),
-    (BgpRibKind::RIB_FS6U, 0),
-    (BgpRibKind::RIB_IPV4MDT, 0),
-    (BgpRibKind::RIB_IPV6MDT, 0),
+const RIB_FLAGS: [(&'static str, RibFields); 18] = [
+    (
+        BgpRibKind::RIB_IPV4U,
+        RibFields {
+            flags: 0,
+            route: ROUTE_IPV4_TYPE,
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_IPV4M,
+        RibFields {
+            flags: 0,
+            route: ROUTE_IPV4_TYPE,
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_IPV4LU,
+        RibFields {
+            flags: 1,
+            route: ROUTE_IPV4_TYPE,
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_VPNV4U,
+        RibFields {
+            flags: 3,
+            route: ROUTE_IPV4_TYPE,
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_VPNV4M,
+        RibFields {
+            flags: 3,
+            route: ROUTE_IPV4_TYPE,
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_IPV6U,
+        RibFields {
+            flags: 0,
+            route: ROUTE_IPV6_TYPE,
+            nexthop: NH_IPV6_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_IPV6LU,
+        RibFields {
+            flags: 1,
+            route: ROUTE_IPV6_TYPE,
+            nexthop: NH_IPV6_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_VPNV6U,
+        RibFields {
+            flags: 3,
+            route: ROUTE_IPV6_TYPE,
+            nexthop: NH_IPV6_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_VPNV6M,
+        RibFields {
+            flags: 3,
+            route: ROUTE_IPV6_TYPE,
+            nexthop: NH_IPV6_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_L2VPLS,
+        RibFields {
+            flags: 3,
+            route: "Tuple(UInt16,UInt16,UInt16)",
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_MVPN,
+        RibFields {
+            flags: 7,
+            route: "Tuple(UInt8,UInt64,IPv4,UInt8,UInt32,IPv4,UInt8,IPv4,IPv4)",
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_EVPN,
+        RibFields {
+            flags: 3,
+            route: "Tuple(UInt8,UInt64,UInt8,String,UInt32,Array(UInt32),String,IPv4,UInt8,IPv4)",
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_FS4U,
+        RibFields {
+            flags: 0,
+            route: ROUTE_STR_TYPE,
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_FS6U,
+        RibFields {
+            flags: 0,
+            route: ROUTE_STR_TYPE,
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_FSV4U,
+        RibFields {
+            flags: 2,
+            route: ROUTE_STR_TYPE,
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_FSV6U,
+        RibFields {
+            flags: 2,
+            route: ROUTE_STR_TYPE,
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_IPV4MDT,
+        RibFields {
+            flags: 0,
+            route: "Tuple(IPv4,UInt8,IPv4)",
+            nexthop: NH_IPV4_TYPE,
+        },
+    ),
+    (
+        BgpRibKind::RIB_IPV6MDT,
+        RibFields {
+            flags: 0,
+            route: "Tuple(IPv6,UInt8,IPv6)",
+            nexthop: NH_IPV6_TYPE,
+        },
+    ),
 ];
 /*
 
@@ -85,23 +223,21 @@ CREATE TABLE if not exists sessions (
 CREATE TABLE if not exists bgprib_ipv4u (
 When DateTime('UTC'),
 SessionId UInt32,
-//RD UInt64,
-Route String,
+Route Tuple(IPv4,UInt8),
 PathId UInt32,
 Active UInt8,
-Origin Nullable(String),
-Nexthop Nullable(String),
+Origin FixedString(1),
+Nexthop Nullable(IPv4),
 Aspath Nullable(String),
 Comms Array(String),
 LargeComms Array(String),
 ExtComms Array(String),
 Med Nullable(UInt32),
 Localpref Nullable(UInt32),
-AtomicAgg Nullable(String),
-AggAs Nullable(String),
-Originator  Nullable(String),
-ClusterList  Array(String),
-Pmsi_ta  Nullable(String)
+AtomicAgg Nullable(IPv4),
+AggAs Tuple(UInt32,IPv4),
+Originator  Nullable(IPv4),
+ClusterList  Array(IPv4)
 )
 ENGINE = MergeTree() primary key (When,SessionId,Route,PathId) ORDER BY (When,SessionId,Route,PathId) TTL When + INTERVAL 12 MONTH;
 
@@ -121,6 +257,25 @@ drop table bgprib_vpnv4m;
 drop table bgprib_vpnv4u;
 drop table bgprib_vpnv6m;
 drop table bgprib_vpnv6u;
+
+rename table bgprib_evpn    to old_evpn;
+rename table bgprib_fs4u    to old_fs4u;
+rename table bgprib_fs6u    to old_fs6u;
+rename table bgprib_fsv4u   to old_fsv4u;
+rename table bgprib_fsv6u   to old_fsv6u;
+rename table bgprib_ipv4lu  to old_ipv4lu;
+rename table bgprib_ipv4m   to old_ipv4m;
+rename table bgprib_ipv4mdt to old_ipv4mdt;
+rename table bgprib_ipv4u   to old_ipv4u;
+rename table bgprib_ipv6lu  to old_ipv6lu;
+rename table bgprib_ipv6mdt to old_ipv6mdt;
+rename table bgprib_ipv6u   to old_ipv6u;
+rename table bgprib_l2vpls  to old_l2vpls;
+rename table bgprib_mvpn    to old_mvpn;
+rename table bgprib_vpnv4m  to old_vpnv4m;
+rename table bgprib_vpnv4u  to old_vpnv4u;
+rename table bgprib_vpnv6m  to old_vpnv6m;
+rename table bgprib_vpnv6u  to old_vpnv6u;
 
 */
 const C_WHEN: &'static str = "When";
@@ -180,7 +335,13 @@ fn append_attribs(
     ));
     v.push((
         C_NHOP.into(),
-        klickhouse::Value::string(a.nexthop.to_string()),
+        match &a.nexthop {
+            zettabgp::afi::BgpAddr::V4(v4) => klickhouse::Value::Ipv4(v4.clone().into()),
+            zettabgp::afi::BgpAddr::V4RD(v4) => klickhouse::Value::Ipv4(v4.addr.into()),
+            zettabgp::afi::BgpAddr::V6(v6) => klickhouse::Value::Ipv6(v6.clone().into()),
+            zettabgp::afi::BgpAddr::V6RD(v6) => klickhouse::Value::Ipv6(v6.addr.into()),
+            _ => klickhouse::Value::Null,
+        },
     ));
     v.push((
         C_ASPATH.into(),
@@ -227,17 +388,34 @@ fn append_attribs(
         v.push((C_LP.into(), klickhouse::Value::Null));
     }
     if let Some(m) = a.atomicaggregate.as_ref() {
-        v.push((C_ATAGG.into(), klickhouse::Value::string(m.to_string())));
+        v.push((C_ATAGG.into(), klickhouse::Value::Ipv4(m.clone().into())));
     } else {
         v.push((C_ATAGG.into(), klickhouse::Value::Null));
     }
     if let Some(m) = a.aggregatoras.as_ref() {
-        v.push((C_AGGAS.into(), klickhouse::Value::string(m.to_string())));
+        v.push((
+            C_AGGAS.into(),
+            klickhouse::Value::Tuple(vec![
+                klickhouse::Value::UInt32(m.asn),
+                klickhouse::Value::Ipv4(m.addr.into()),
+            ]),
+        ));
     } else {
-        v.push((C_AGGAS.into(), klickhouse::Value::Null));
+        v.push((
+            C_AGGAS.into(),
+            klickhouse::Value::Tuple(vec![
+                klickhouse::Value::UInt32(0),
+                klickhouse::Value::Ipv4(std::net::Ipv4Addr::new(0, 0, 0, 0).into()),
+            ]),
+        ));
     }
     if let Some(m) = a.originator.as_ref() {
-        v.push((C_ORIG.into(), klickhouse::Value::string(m.to_string())));
+        match m {
+            std::net::IpAddr::V4(x) => {
+                v.push((C_ORIG.into(), klickhouse::Value::Ipv4(x.clone().into())))
+            }
+            _ => v.push((C_ORIG.into(), klickhouse::Value::Null)),
+        };
     } else {
         v.push((C_ORIG.into(), klickhouse::Value::Null));
     }
@@ -247,7 +425,13 @@ fn append_attribs(
             klickhouse::Value::Array(
                 m.value
                     .iter()
-                    .map(|c| klickhouse::Value::string(c.to_string()))
+                    .map(|c| match c {
+                        std::net::IpAddr::V4(v4) => Some(v4.clone()),
+                        _ => None,
+                    })
+                    .filter(|c| c.is_some())
+                    .map(|c| c.unwrap())
+                    .map(|c| klickhouse::Value::Ipv4(c.into()))
                     .collect(),
             ),
         ));
@@ -256,10 +440,381 @@ fn append_attribs(
     }
     if type_hints.contains_key(C_PMSI) {
         if let Some(m) = a.pmsi_ta.as_ref() {
-            v.push((C_PMSI.into(), klickhouse::Value::string(m.to_string())));
+            //v.push((C_PMSI.into(), klickhouse::Value::string(m.to_string())));
+            v.push((C_PMSI.into(), pmsi_to_ch_value(m)));
         } else {
-            v.push((C_PMSI.into(), klickhouse::Value::Null));
+            v.push((C_PMSI.into(), PMSI_EMPTY.clone()));
         }
+    }
+}
+lazy_static! {
+    static ref IPV4_ZERO: klickhouse::Value =
+        klickhouse::Value::Ipv4(std::net::Ipv4Addr::new(0, 0, 0, 0).into());
+    static ref STR_EMPTY: klickhouse::Value = klickhouse::Value::string("");
+    static ref PMSI_EMPTY: klickhouse::Value = klickhouse::Value::Tuple(vec![
+        klickhouse::Value::UInt8(0),
+        klickhouse::Value::UInt8(0),
+        klickhouse::Value::Array(Vec::new()),
+        klickhouse::Value::UInt8(255),
+        IPV4_ZERO.clone(),
+        klickhouse::Value::UInt16(0),
+        klickhouse::Value::UInt16(0),
+        IPV4_ZERO.clone()
+    ]);
+}
+fn ipaddr_to_ch(a: &std::net::IpAddr) -> klickhouse::Value {
+    match a {
+        std::net::IpAddr::V4(v4) => klickhouse::Value::Ipv4(v4.clone().into()),
+        _ => IPV4_ZERO.clone(),
+    }
+}
+fn pmsi_to_ch_value(pmsi: &zettabgp::prelude::BgpPMSITunnel) -> klickhouse::Value {
+    use zettabgp::prelude::BgpPMSITunnelAttr;
+    //Tuple(UInt8,UInt8,Array(UInt32),UInt8,IPv4,UInt16,UInt16,IPv4)
+    //klickhouse::Value::string(pmsi.to_string())
+    let mut v = vec![
+        klickhouse::Value::UInt8(pmsi.tunnel_type),
+        klickhouse::Value::UInt8(pmsi.flags),
+        klickhouse::Value::Array(
+            pmsi.label
+                .labels
+                .iter()
+                .cloned()
+                .map(|x| klickhouse::Value::UInt32(x))
+                .collect(),
+        ),
+    ];
+    match &pmsi.tunnel_attribute {
+        BgpPMSITunnelAttr::None => {
+            v.push(klickhouse::Value::UInt8(0));
+            v.push(IPV4_ZERO.clone());
+            v.push(klickhouse::Value::UInt16(0));
+            v.push(klickhouse::Value::UInt16(0));
+            v.push(IPV4_ZERO.clone());
+        }
+        BgpPMSITunnelAttr::RSVPTe(t) => {
+            v.push(klickhouse::Value::UInt8(1));
+            v.push(klickhouse::Value::Ipv4(t.ext_tunnel_id.clone().into()));
+            v.push(klickhouse::Value::UInt16(t.reserved));
+            v.push(klickhouse::Value::UInt16(t.tunnel_id));
+            v.push(klickhouse::Value::Ipv4(t.p2mp_id.clone().into()));
+        }
+        BgpPMSITunnelAttr::IngressRepl(r) => {
+            v.push(klickhouse::Value::UInt8(2));
+            v.push(klickhouse::Value::Ipv4(r.endpoint.clone().into()));
+            v.push(klickhouse::Value::UInt16(0));
+            v.push(klickhouse::Value::UInt16(0));
+            v.push(IPV4_ZERO.clone());
+        }
+        BgpPMSITunnelAttr::MLDP(l) => {
+            v.push(klickhouse::Value::UInt8(3));
+            v.push(ipaddr_to_ch(&l.rootnode));
+            v.push(klickhouse::Value::UInt16(0));
+            v.push(klickhouse::Value::UInt16(0));
+            v.push(IPV4_ZERO.clone());
+        }
+    };
+    klickhouse::Value::Tuple(v)
+}
+trait ToChField: BgpRIBKey + std::fmt::Display {
+    fn to_ch_value(&self) -> klickhouse::Value;
+}
+impl ToChField for BgpAddrV4 {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        klickhouse::Value::Tuple(vec![
+            klickhouse::Value::Ipv4(self.addr.clone().into()),
+            klickhouse::Value::UInt8(self.prefixlen),
+        ])
+    }
+}
+impl ToChField for BgpAddrV6 {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        klickhouse::Value::Tuple(vec![
+            klickhouse::Value::Ipv6(self.addr.clone().into()),
+            klickhouse::Value::UInt8(self.prefixlen),
+        ])
+    }
+}
+impl ToChField for zettabgp::afi::BgpAddrL2 {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        klickhouse::Value::Tuple(vec![
+            klickhouse::Value::UInt16(self.site),
+            klickhouse::Value::UInt16(self.offset),
+            klickhouse::Value::UInt16(self.range),
+        ])
+    }
+}
+impl ToChField for zettabgp::afi::BgpMVPN {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        /*
+        Tuple(UInt8,UInt64,IPv4,UInt8,UInt32,IPv4,UInt8,IPv4,IPv4)
+        T1(BgpMVPN1),  //Intra AS I-PMSI AD  1:10.255.170.100:1:10.255.170.100
+        T2(BgpMVPN2),  //Inter AS I-PMSI AD  2:10.255.170.100:1:65000
+        T3(BgpMVPN3), //S-PMSI AD           3:10.255.170.100:1:32:192.168.194.2:32:224.1.2.3:10.255.170.100
+        T4(BgpMVPN4), //Leaf AD             4:3:10.255.170.100:1:32:192.168.194.2:32:224.1.2.3:10.255.170.100:10.255.170.98
+        T5(BgpMVPN5), //Source Active AD    5:10.255.170.100:1:32:192.168.194.2:32:224.1.2.3
+        T6(BgpMVPN67), //Shared Tree Join    6:10.255.170.100:1:65000:32:10.12.53.12:32:224.1.2.3
+        T7(BgpMVPN67), //Source Tree Join    7:10.255.170.100:1:65000:32:192.168.194.2:32:224.1.2.3
+            */
+        match self {
+            zettabgp::afi::BgpMVPN::T1(t1) => klickhouse::Value::Tuple(vec![
+                klickhouse::Value::UInt8(1),
+                klickhouse::Value::UInt64(t1.rd.to_u64()),
+                ipaddr_to_ch(&t1.originator),
+                klickhouse::Value::UInt8(0),
+                klickhouse::Value::UInt32(0),
+                IPV4_ZERO.clone(),
+                klickhouse::Value::UInt8(0),
+                IPV4_ZERO.clone(),
+                IPV4_ZERO.clone(),
+            ]),
+            zettabgp::afi::BgpMVPN::T2(t2) => klickhouse::Value::Tuple(vec![
+                klickhouse::Value::UInt8(2),
+                klickhouse::Value::UInt64(t2.rd.to_u64()),
+                IPV4_ZERO.clone(),
+                klickhouse::Value::UInt8(0),
+                klickhouse::Value::UInt32(t2.asn),
+                IPV4_ZERO.clone(),
+                klickhouse::Value::UInt8(0),
+                IPV4_ZERO.clone(),
+                IPV4_ZERO.clone(),
+            ]),
+            zettabgp::afi::BgpMVPN::T3(t3) => klickhouse::Value::Tuple(vec![
+                klickhouse::Value::UInt8(3),
+                klickhouse::Value::UInt64(t3.rd.to_u64()),
+                ipaddr_to_ch(&t3.source),
+                klickhouse::Value::UInt8(0),
+                klickhouse::Value::UInt32(0),
+                ipaddr_to_ch(&t3.group),
+                klickhouse::Value::UInt8(0),
+                ipaddr_to_ch(&t3.originator),
+                IPV4_ZERO.clone(),
+            ]),
+            zettabgp::afi::BgpMVPN::T4(t4) => klickhouse::Value::Tuple(vec![
+                klickhouse::Value::UInt8(4),
+                klickhouse::Value::UInt64(t4.spmsi.rd.to_u64()),
+                ipaddr_to_ch(&t4.spmsi.source),
+                klickhouse::Value::UInt8(0),
+                klickhouse::Value::UInt32(0),
+                ipaddr_to_ch(&t4.spmsi.group),
+                klickhouse::Value::UInt8(0),
+                ipaddr_to_ch(&t4.spmsi.originator),
+                ipaddr_to_ch(&t4.originator),
+            ]),
+            zettabgp::afi::BgpMVPN::T5(t5) => klickhouse::Value::Tuple(vec![
+                klickhouse::Value::UInt8(5),
+                klickhouse::Value::UInt64(t5.rd.to_u64()),
+                ipaddr_to_ch(&t5.source),
+                klickhouse::Value::UInt8(0),
+                klickhouse::Value::UInt32(0),
+                ipaddr_to_ch(&t5.group),
+                klickhouse::Value::UInt8(0),
+                IPV4_ZERO.clone(),
+                IPV4_ZERO.clone(),
+            ]),
+            zettabgp::afi::BgpMVPN::T6(t) => klickhouse::Value::Tuple(vec![
+                klickhouse::Value::UInt8(6),
+                klickhouse::Value::UInt64(t.rd.to_u64()),
+                ipaddr_to_ch(&t.rp),
+                klickhouse::Value::UInt8(0),
+                klickhouse::Value::UInt32(t.asn),
+                ipaddr_to_ch(&t.group),
+                klickhouse::Value::UInt8(0),
+                IPV4_ZERO.clone(),
+                IPV4_ZERO.clone(),
+            ]),
+            zettabgp::afi::BgpMVPN::T7(t) => klickhouse::Value::Tuple(vec![
+                klickhouse::Value::UInt8(7),
+                klickhouse::Value::UInt64(t.rd.to_u64()),
+                ipaddr_to_ch(&t.rp),
+                klickhouse::Value::UInt8(0),
+                klickhouse::Value::UInt32(t.asn),
+                ipaddr_to_ch(&t.group),
+                klickhouse::Value::UInt8(0),
+                IPV4_ZERO.clone(),
+                IPV4_ZERO.clone(),
+            ]),
+            //_ => klickhouse::Value::string(self.to_string())
+        }
+    }
+}
+impl ToChField for zettabgp::afi::BgpEVPN {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        //klickhouse::Value::string(self.to_string())
+        //Tuple(UInt8,UInt64,UInt8,String,UInt32,Array(UInt32),String,IPv4,UInt8,IPv4)
+        match self {
+            zettabgp::afi::BgpEVPN::EVPN1(t1) => klickhouse::Value::Tuple(vec![
+                /*
+                pub rd: BgpRD,
+                pub esi_type: u8,
+                pub esi: EVPNESI,
+                pub ether_tag: u32,
+                pub labels: MplsLabels,
+                    */
+                klickhouse::Value::UInt8(1),
+                klickhouse::Value::UInt64(t1.rd.to_u64()),
+                klickhouse::Value::UInt8(t1.esi_type),
+                klickhouse::Value::string(format!("{}", t1.esi)),
+                klickhouse::Value::UInt32(t1.ether_tag),
+                klickhouse::Value::Array(
+                    t1.labels
+                        .labels
+                        .iter()
+                        .cloned()
+                        .map(|x| klickhouse::Value::UInt32(x))
+                        .collect(),
+                ),
+                STR_EMPTY.clone(),
+                IPV4_ZERO.clone(),
+                klickhouse::Value::UInt8(0),
+                IPV4_ZERO.clone(),
+            ]),
+            zettabgp::afi::BgpEVPN::EVPN2(t2) => klickhouse::Value::Tuple(vec![
+                /*
+                pub rd: BgpRD,
+                pub esi_type: u8,
+                pub esi: EVPNESI,
+                pub ether_tag: u32,
+                pub mac: MacAddress,
+                pub ip: Option<std::net::IpAddr>,
+                pub labels: MplsLabels,
+                            */
+                klickhouse::Value::UInt8(2),
+                klickhouse::Value::UInt64(t2.rd.to_u64()),
+                klickhouse::Value::UInt8(t2.esi_type),
+                klickhouse::Value::string(format!("{}", t2.esi)),
+                klickhouse::Value::UInt32(t2.ether_tag),
+                klickhouse::Value::Array(
+                    t2.labels
+                        .labels
+                        .iter()
+                        .cloned()
+                        .map(|x| klickhouse::Value::UInt32(x))
+                        .collect(),
+                ),
+                klickhouse::Value::string(format!("{}", t2.mac)),
+                match t2.ip {
+                    Some(std::net::IpAddr::V4(ip4)) => klickhouse::Value::Ipv4(ip4.clone().into()),
+                    _ => IPV4_ZERO.clone(),
+                },
+                klickhouse::Value::UInt8(0),
+                IPV4_ZERO.clone(),
+            ]),
+            zettabgp::afi::BgpEVPN::EVPN3(t3) => klickhouse::Value::Tuple(vec![
+                /*
+                pub rd: BgpRD,
+                pub ether_tag: u32,
+                pub ip: std::net::IpAddr,
+                            */
+                klickhouse::Value::UInt8(3),
+                klickhouse::Value::UInt64(t3.rd.to_u64()),
+                klickhouse::Value::UInt8(0),
+                STR_EMPTY.clone(),
+                klickhouse::Value::UInt32(t3.ether_tag),
+                klickhouse::Value::Array(vec![]),
+                STR_EMPTY.clone(),
+                match t3.ip {
+                    std::net::IpAddr::V4(ip4) => klickhouse::Value::Ipv4(ip4.clone().into()),
+                    _ => IPV4_ZERO.clone(),
+                },
+                klickhouse::Value::UInt8(0),
+                IPV4_ZERO.clone(),
+            ]),
+            zettabgp::afi::BgpEVPN::EVPN4(t4) => klickhouse::Value::Tuple(vec![
+                /*
+                pub rd: BgpRD,
+                pub esi_type: u8,
+                pub esi: EVPNESI,
+                pub ip: std::net::IpAddr,
+                            */
+                klickhouse::Value::UInt8(4),
+                klickhouse::Value::UInt64(t4.rd.to_u64()),
+                klickhouse::Value::UInt8(t4.esi_type),
+                klickhouse::Value::string(format!("{}", t4.esi)),
+                klickhouse::Value::UInt32(0),
+                klickhouse::Value::Array(vec![]),
+                STR_EMPTY.clone(),
+                match t4.ip {
+                    std::net::IpAddr::V4(ip4) => klickhouse::Value::Ipv4(ip4.clone().into()),
+                    _ => IPV4_ZERO.clone(),
+                },
+                klickhouse::Value::UInt8(0),
+                IPV4_ZERO.clone(),
+            ]),
+            zettabgp::afi::BgpEVPN::EVPN5(t5) => klickhouse::Value::Tuple(vec![
+                /*
+                pub rd: BgpRD,
+                pub esi_type: u8,
+                pub esi: EVPNESI,
+                pub ether_tag: u32,
+                pub len: u8,
+                pub prefix: IpAddr,
+                pub gw_ip: IpAddr,
+                pub labels: MplsLabels,
+                            */
+                klickhouse::Value::UInt8(5),
+                klickhouse::Value::UInt64(t5.rd.to_u64()),
+                klickhouse::Value::UInt8(t5.esi_type),
+                klickhouse::Value::string(format!("{}", t5.esi)),
+                klickhouse::Value::UInt32(t5.ether_tag),
+                klickhouse::Value::Array(
+                    t5.labels
+                        .labels
+                        .iter()
+                        .cloned()
+                        .map(|x| klickhouse::Value::UInt32(x))
+                        .collect(),
+                ),
+                STR_EMPTY.clone(),
+                match t5.prefix {
+                    std::net::IpAddr::V4(ip4) => klickhouse::Value::Ipv4(ip4.clone().into()),
+                    _ => IPV4_ZERO.clone(),
+                },
+                klickhouse::Value::UInt8(t5.len),
+                match t5.gw_ip {
+                    std::net::IpAddr::V4(ip4) => klickhouse::Value::Ipv4(ip4.clone().into()),
+                    _ => IPV4_ZERO.clone(),
+                },
+            ]),
+        }
+    }
+}
+impl ToChField for zettabgp::afi::BgpMdtV4 {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        klickhouse::Value::Tuple(vec![
+            klickhouse::Value::Ipv4(self.addr.addr.clone().into()),
+            klickhouse::Value::UInt8(self.addr.prefixlen),
+            klickhouse::Value::Ipv4(self.group.clone().into()),
+        ])
+    }
+}
+impl ToChField for zettabgp::afi::BgpMdtV6 {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        klickhouse::Value::Tuple(vec![
+            klickhouse::Value::Ipv6(self.addr.addr.clone().into()),
+            klickhouse::Value::UInt8(self.addr.prefixlen),
+            klickhouse::Value::Ipv6(self.group.clone().into()),
+        ])
+    }
+}
+impl ToChField for zettabgp::afi::BgpFlowSpec<BgpAddrV4> {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        klickhouse::Value::string(self.to_string())
+    }
+}
+impl ToChField for zettabgp::afi::BgpFlowSpec<zettabgp::afi::FS6> {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        klickhouse::Value::string(self.to_string())
+    }
+}
+impl<T: ToChField + zettabgp::afi::BgpItem<T>> ToChField for zettabgp::afi::Labeled<T> {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        self.prefix.to_ch_value()
+    }
+}
+impl<T: ToChField + zettabgp::afi::BgpItem<T>> ToChField for zettabgp::afi::WithRd<T> {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        self.prefix.to_ch_value()
     }
 }
 struct RibRowU {
@@ -267,12 +822,12 @@ struct RibRowU {
     s: BgpSessionId,
     rd: Option<u64>,
     labels: Option<MplsLabels>,
-    route: String,
+    route: klickhouse::Value,
     pathid: u32,
     a: Arc<BgpAttrs>,
 }
 impl RibRowU {
-    fn new<T: BgpRIBKey + Display>(
+    fn new<T: ToChField>(
         t: Timestamp,
         s: BgpSessionId,
         k: T,
@@ -284,7 +839,7 @@ impl RibRowU {
             s,
             rd: k.getrd().map(|r| r.to_u64()),
             labels: k.getlabels(),
-            route: k.inner_string(),
+            route: k.to_ch_value(),
             pathid,
             a,
         }
@@ -325,7 +880,7 @@ impl klickhouse::Row for RibRowU {
                 v.push((C_RD.into(), klickhouse::Value::UInt64(r)));
             }
         }
-        v.push((C_ROUTE.into(), klickhouse::Value::string(self.route)));
+        v.push((C_ROUTE.into(), self.route));
         v.push((C_PATHID.into(), klickhouse::Value::UInt32(self.pathid)));
         v.push((C_ACTIVE.into(), klickhouse::Value::UInt8(1)));
         if type_hints.contains_key(C_LABELS) {
@@ -349,16 +904,16 @@ struct RibRowW {
     t: Timestamp,
     s: BgpSessionId,
     rd: Option<u64>,
-    route: String,
+    route: klickhouse::Value,
     pathid: u32,
 }
 impl RibRowW {
-    fn new<T: BgpRIBKey + Display>(t: Timestamp, s: BgpSessionId, k: T, pathid: u32) -> Self {
+    fn new<T: ToChField>(t: Timestamp, s: BgpSessionId, k: T, pathid: u32) -> Self {
         Self {
             t,
             s,
             rd: k.getrd().map(|r| r.to_u64()),
-            route: k.inner_string(),
+            route: k.to_ch_value(),
             pathid,
         }
     }
@@ -390,46 +945,70 @@ impl klickhouse::Row for RibRowW {
             )),
         ));
         v.push((C_SESSION.into(), klickhouse::Value::UInt32(self.s as u32)));
-        v.push((C_ACTIVE.into(), klickhouse::Value::UInt8(1)));
+        v.push((C_ACTIVE.into(), klickhouse::Value::UInt8(0)));
         if type_hints.contains_key(C_RD) {
             if let Some(r) = self.rd {
                 v.push((C_RD.into(), klickhouse::Value::UInt64(r)));
             }
         }
-        v.push((C_ROUTE.into(), klickhouse::Value::string(self.route)));
+        v.push((C_ROUTE.into(), self.route));
         v.push((C_PATHID.into(), klickhouse::Value::UInt32(self.pathid)));
         Ok(v)
     }
 }
-/*
-fn ipaddr2val(a: IpAddr) -> klickhouse::Value {
-    match a {
-        IpAddr::V4(a4) => klickhouse::Value::Ipv4(klickhouse::Ipv4(a4)),
-        IpAddr::V6(a6) => klickhouse::Value::Ipv6(klickhouse::Ipv6(a6)),
-    }
-}
-*/
-pub struct ReceiverStream<T> {
-    inner: Arc<parking_lot::Mutex<Receiver<T>>>,
+pub struct ReceiverStream<T: Send + 'static> {
+    recv: Arc<tokio::sync::Mutex<Receiver<T>>>,
+    f: Option<Pin<Box<dyn futures::Future<Output = Option<T>> + Send + Sync>>>,
+    finish: tokio::time::Instant,
 }
 
-impl<T> ReceiverStream<T> {
-    pub fn new(recv: Arc<parking_lot::Mutex<Receiver<T>>>) -> Self {
-        Self { inner: recv }
+impl<T: Send + 'static> ReceiverStream<T> {
+    pub fn new(recv: Arc<tokio::sync::Mutex<Receiver<T>>>, finish: tokio::time::Instant) -> Self {
+        Self {
+            recv,
+            f: None,
+            finish,
+        }
     }
 }
 
-impl<T> Stream for ReceiverStream<T> {
+impl<T: Send + 'static> Stream for ReceiverStream<T> {
     type Item = T;
 
     fn poll_next(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut futures::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        self.inner.lock().poll_recv(cx)
+        if self.finish < tokio::time::Instant::now() {
+            return Poll::Ready(None);
+        }
+        let mut f = match self.f.take() {
+            None => {
+                let rx = self.recv.clone();
+                let deadline = self.finish;
+                let to = async move {
+                    tokio::time::timeout_at(deadline, async move { rx.lock().await.recv().await })
+                        .await
+                        .ok()
+                        .flatten()
+                };
+                Box::pin(to)
+            }
+            Some(f) => f,
+        };
+        let r = f.poll_unpin(cx);
+        match r {
+            Poll::Ready(q) => {
+                return Poll::Ready(q);
+            }
+            _ => {}
+        };
+        self.f = Some(f);
+        return Poll::Pending;
     }
+    /*
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let inner = self.inner.lock();
+        let inner = self.recv.lock();
         if inner.is_closed() {
             let used_capacity = inner.max_capacity() - inner.capacity();
             (inner.len(), Some(used_capacity))
@@ -437,6 +1016,7 @@ impl<T> Stream for ReceiverStream<T> {
             (inner.len(), None)
         }
     }
+        */
 }
 //<T: BgpRIBKey + Display + std::marker::Send + std::marker::Sync + 'static>
 struct InserterChannel<T: klickhouse::Row + Send + Sync + 'static> {
@@ -457,25 +1037,33 @@ impl<T: klickhouse::Row + Send + Sync + 'static> InserterChannel<T> {
         let task = tokio::spawn(async move {
             let client = click.connect().await?;
             let sql = format!("INSERT INTO bgprib_{} FORMAT native", ribt);
-            let mrx = Arc::new(parking_lot::Mutex::new(rx));
+            let mrx = Arc::new(tokio::sync::Mutex::new(rx));
             loop {
                 let rbt = ribtype;
-                let strm = ReceiverStream::new(mrx.clone())
-                    .chunks_timeout(batch_size, batch_dur)
-                    .map(move |v| {
-                        //v.into_flattened()
-                        let mut r = Vec::new();
-                        for mut i in v.into_iter() {
-                            r.append(&mut i);
-                        }
-                        r.shrink_to_fit();
-                        r
-                    })
-                    .take(break_count);
+                let strm = ReceiverStream::new(
+                    mrx.clone(),
+                    tokio::time::Instant::now() + (batch_dur * (break_count as u32)),
+                )
+                .chunks_timeout(batch_size, batch_dur)
+                .map(move |v| {
+                    //v.into_flattened()
+                    let mut r = Vec::new();
+                    for mut i in v.into_iter() {
+                        r.append(&mut i);
+                    }
+                    r.shrink_to_fit();
+                    debug!(
+                        "clickhouse InserterChannel {} got {} items",
+                        ribtype,
+                        r.len()
+                    );
+                    r
+                })
+                .take(break_count);
                 let strm = Box::pin(strm);
                 client.insert_native(&sql, strm).await?;
                 debug!("rib {} insert done", rbt);
-                if mrx.lock().is_closed() {
+                if mrx.lock().await.is_closed() {
                     break;
                 }
             }
@@ -509,7 +1097,7 @@ impl ClickhouseStorage {
         Ok(ClickhouseStorage {
             click,
             sessions: tokio::sync::RwLock::new(BTreeMap::new()),
-            sids: std::sync::RwLock::new(BTreeMap::new()),
+            sids: parking_lot::RwLock::new(BTreeMap::new()),
             cso,
             upd: tokio::sync::RwLock::new(BTreeMap::new()),
             wdr: tokio::sync::RwLock::new(BTreeMap::new()),
@@ -535,7 +1123,7 @@ impl ClickhouseStorage {
                 error!("connect error: {:?}", e);
                 if offer != 0 {
                     (*wg).insert(k.clone(), offer);
-                    self.sids.write().unwrap().insert(offer, k);
+                    self.sids.write().insert(offer, k);
                 }
                 return offer;
             }
@@ -554,7 +1142,7 @@ impl ClickhouseStorage {
             if r.id > 0 {
                 let q = r.id as BgpSessionId;
                 (*wg).insert(k.clone(), q);
-                self.sids.write().unwrap().insert(q, k);
+                self.sids.write().insert(q, k);
                 return q;
             }
         }
@@ -562,9 +1150,12 @@ impl ClickhouseStorage {
             .query_one::<MyId>("select max(id) as id from sessions")
             .await
         {
-            let q = (r.id + 1) as BgpSessionId;
+            let mut q = (r.id + 1) as BgpSessionId;
+            while self.sids.read().get(&q).is_some() {
+                q += 1;
+            }
             (*wg).insert(k.clone(), q);
-            self.sids.write().unwrap().insert(q, k);
+            self.sids.write().insert(q, k);
 
             #[derive(Row)]
             pub struct NewId {
@@ -590,7 +1181,7 @@ impl ClickhouseStorage {
             return q;
         }
         (*wg).insert(k.clone(), offer);
-        self.sids.write().unwrap().insert(offer, k);
+        self.sids.write().insert(offer, k);
         offer
     }
     async fn inserter_updates(
@@ -649,7 +1240,7 @@ impl ClickhouseStorage {
         wg.insert(ribtype, i);
         Ok(rt)
     }
-    async fn out_upd<T: BgpRIBKey + Display + std::marker::Send + std::marker::Sync + 'static>(
+    async fn out_upd<T: ToChField + std::marker::Send + std::marker::Sync + 'static>(
         &self,
         ribtype: &'static str,
         session: BgpSessionId,
@@ -679,9 +1270,43 @@ impl ClickhouseStorage {
         }
         Ok(())
     }
-    async fn out_upd_path<
-        T: BgpRIBKey + Display + std::marker::Send + std::marker::Sync + 'static,
-    >(
+    async fn out_upd_rd<T: ToChField + std::marker::Send + std::marker::Sync + 'static>(
+        &self,
+        ribtype: &'static str,
+        session: BgpSessionId,
+        rattr: Arc<BgpAttrs>,
+        when: Timestamp,
+        rd: BgpRD,
+        v: &[T],
+    ) -> anyhow::Result<()> {
+        let rdu = rd.to_u64();
+        let rows: Vec<_> = v
+            .iter()
+            .map(|q| {
+                let mut r = RibRowU::new(when, session, q.clone(), 0, rattr.clone());
+                r.rd = Some(rdu);
+                r
+            })
+            .collect();
+        let ins = self
+            .inserter_updates(ribtype)
+            .await
+            .with_context(|| format!("out_upd inserter_updates {}", ribtype))?;
+        if let Err(e) = ins.send(rows).await {
+            self.check_connected()
+                .await
+                .with_context(|| format!("out_upd check_connected {}", ribtype))?;
+            let ins = self
+                .inserter_updates(ribtype)
+                .await
+                .with_context(|| format!("out_upd inserter_updates double {}", ribtype))?;
+            if ins.send(e.0).await.is_err() {
+                return Err(anyhow!("Unable to insert rows into {}", ribtype));
+            }
+        }
+        Ok(())
+    }
+    async fn out_upd_path<T: ToChField + std::marker::Send + std::marker::Sync + 'static>(
         &self,
         ribtype: &'static str,
         session: BgpSessionId,
@@ -711,7 +1336,7 @@ impl ClickhouseStorage {
         }
         Ok(())
     }
-    async fn out_wdr<T: BgpRIBKey + Display + std::marker::Send + std::marker::Sync + 'static>(
+    async fn out_wdr<T: ToChField + std::marker::Send + std::marker::Sync + 'static>(
         &self,
         ribtype: &'static str,
         session: BgpSessionId,
@@ -740,9 +1365,42 @@ impl ClickhouseStorage {
         }
         Ok(())
     }
-    async fn out_wdr_path<
-        T: BgpRIBKey + Display + std::marker::Send + std::marker::Sync + 'static,
-    >(
+    async fn out_wdr_rd<T: ToChField + std::marker::Send + std::marker::Sync + 'static>(
+        &self,
+        ribtype: &'static str,
+        session: BgpSessionId,
+        when: Timestamp,
+        rd: BgpRD,
+        v: &[T],
+    ) -> anyhow::Result<()> {
+        let rdu = rd.to_u64();
+        let rows: Vec<_> = v
+            .iter()
+            .map(|q| {
+                let mut r = RibRowW::new(when, session, q.clone(), 0);
+                r.rd = Some(rdu);
+                r
+            })
+            .collect();
+        let ins: Sender<Vec<RibRowW>> = self
+            .inserter_withdraws(ribtype)
+            .await
+            .with_context(|| format!("out_wdr inserter_withdraws {}", ribtype))?;
+        if let Err(e) = ins.send(rows).await {
+            self.check_connected()
+                .await
+                .with_context(|| format!("out_wdr check_connected {}", ribtype))?;
+            let ins = self
+                .inserter_withdraws(ribtype)
+                .await
+                .with_context(|| format!("out_wdr inserter_withdraws double {}", ribtype))?;
+            if ins.send(e.0).await.is_err() {
+                return Err(anyhow!("Unable to insert rows into {}", ribtype));
+            }
+        }
+        Ok(())
+    }
+    async fn out_wdr_path<T: ToChField + std::marker::Send + std::marker::Sync + 'static>(
         &self,
         ribtype: &'static str,
         session: BgpSessionId,
@@ -791,36 +1449,42 @@ impl Storage for ClickhouseStorage {
             warn!("Clickhouse open error: {:?}", e);
         }
         let mut buf = bytes::BytesMut::new();
-        for (rib, flg) in RIB_FLAGS {
+        for (rib, fld) in RIB_FLAGS {
             buf.clear();
             write!(
                 &mut buf,
                 "CREATE TABLE if not exists bgprib_{} (When DateTime('UTC'),SessionId UInt32,",
                 rib
             )?;
-            if flg & 2 > 0 {
+            if fld.flags & 2 > 0 {
                 write!(&mut buf, "RD UInt64,")?;
             }
-            write!(&mut buf, "Route String,PathId UInt32,")?;
-            if flg & 1 > 0 {
+            write!(&mut buf, "Route {},", fld.route)?;
+            write!(&mut buf, "PathId UInt32,")?;
+            if fld.flags & 1 > 0 {
                 write!(&mut buf, "Labels Array(UInt32),")?;
             }
-            write!(&mut buf,"Active UInt8,Origin Nullable(String),Nexthop Nullable(String),Aspath Nullable(String),
-Comms Array(String),LargeComms Array(String),ExtComms Array(String),Med Nullable(UInt32),Localpref Nullable(UInt32),AtomicAgg Nullable(String),
-AggAs Nullable(String),Originator Nullable(String),ClusterList Array(String)")?;
-            if flg & 4 > 0 {
-                write!(&mut buf, ",Pmsi_ta  Nullable(String)")?;
+            write!(&mut buf, "Active UInt8,Origin FixedString(1),")?;
+            write!(&mut buf, "Nexthop {},", fld.nexthop)?;
+            write!(&mut buf,"Aspath Nullable(String),
+Comms Array(String),LargeComms Array(String),ExtComms Array(String),Med Nullable(UInt32),Localpref Nullable(UInt32),AtomicAgg Nullable(IPv4),
+AggAs Tuple(UInt32,IPv4),Originator Nullable(IPv4),ClusterList Array(IPv4)")?;
+            if fld.flags & 4 > 0 {
+                write!(
+                    &mut buf,
+                    ",Pmsi_ta  Tuple(UInt8,UInt8,Array(UInt32),UInt8,IPv4,UInt16,UInt16,IPv4)"
+                )?;
             }
             write!(
                 &mut buf,
                 ")ENGINE = MergeTree() primary key (When,SessionId,"
             )?;
-            if flg & 2 > 0 {
+            if fld.flags & 2 > 0 {
                 write!(&mut buf, "RD,")?;
             }
             write!(&mut buf, "Route,PathId) ORDER BY (When,SessionId,")?;
 
-            if flg & 2 > 0 {
+            if fld.flags & 2 > 0 {
                 write!(&mut buf, "RD,")?;
             }
             write!(&mut buf, "Route,PathId)")?;
@@ -910,9 +1574,31 @@ AggAs Nullable(String),Originator Nullable(String),ClusterList Array(String)")?;
                 self.out_upd(BgpRibKind::RIB_FS4U, session, rattr, when, v)
                     .await
             }
+            BgpAddrs::FSV4U(v) => {
+                self.out_upd_rd(
+                    BgpRibKind::RIB_FSV4U,
+                    session,
+                    rattr,
+                    when,
+                    v.0.clone(),
+                    &v.1,
+                )
+                .await
+            }
             BgpAddrs::FS6U(v) => {
                 self.out_upd(BgpRibKind::RIB_FS6U, session, rattr, when, v)
                     .await
+            }
+            BgpAddrs::FSV6U(v) => {
+                self.out_upd_rd(
+                    BgpRibKind::RIB_FSV6U,
+                    session,
+                    rattr,
+                    when,
+                    v.0.clone(),
+                    &v.1,
+                )
+                .await
             }
             BgpAddrs::IPV4UP(v) => {
                 self.out_upd_path(BgpRibKind::RIB_IPV4U, session, rattr, when, v)
@@ -983,7 +1669,15 @@ AggAs Nullable(String),Originator Nullable(String),ClusterList Array(String)")?;
             BgpAddrs::MVPN(v) => self.out_wdr(BgpRibKind::RIB_MVPN, session, when, v).await,
             BgpAddrs::EVPN(v) => self.out_wdr(BgpRibKind::RIB_EVPN, session, when, v).await,
             BgpAddrs::FS4U(v) => self.out_wdr(BgpRibKind::RIB_FS4U, session, when, v).await,
+            BgpAddrs::FSV4U(v) => {
+                self.out_wdr_rd(BgpRibKind::RIB_FS4U, session, when, v.0.clone(), &v.1)
+                    .await
+            }
             BgpAddrs::FS6U(v) => self.out_wdr(BgpRibKind::RIB_FS6U, session, when, v).await,
+            BgpAddrs::FSV6U(v) => {
+                self.out_wdr_rd(BgpRibKind::RIB_FS4U, session, when, v.0.clone(), &v.1)
+                    .await
+            }
             BgpAddrs::IPV4UP(v) => {
                 self.out_wdr_path(BgpRibKind::RIB_IPV4U, session, when, v)
                     .await

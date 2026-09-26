@@ -11,7 +11,7 @@ pub struct BgpPeer<'a, H: BgpUpdateHandler> {
     pub params: BgpSessionParams,
     peersock: tokio::net::TcpStream,
     keepalive_sent: DateTime<Local>,
-    sessionid: BgpSessionId,
+    pub sessionid: BgpSessionId,
     update_handler: &'a H,
 }
 

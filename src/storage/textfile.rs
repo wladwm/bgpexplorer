@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
-use zettabgp::prelude::{BgpAddrs, WithPathId};
+use zettabgp::prelude::{BgpAddrs, BgpRD, WithPathId};
 
 pub struct TextWriter {
     pub prefix: String,
@@ -86,6 +86,23 @@ impl TextWriter {
         wf.write().await.write_all(&buf).await?;
         Ok(())
     }
+    async fn out_upd_rd<T: BgpRIBKey + Display>(
+        &self,
+        ribtype: &'static str,
+        session: BgpSessionId,
+        rattr: Arc<BgpAttrs>,
+        when: Timestamp,
+        rd: BgpRD,
+        v: &[T],
+    ) -> anyhow::Result<()> {
+        let wf = self.get_out(ribtype, session).await?;
+        let mut buf = bytes::BytesMut::new();
+        for q in v.iter() {
+            writeln!(&mut buf, "{}\t+\t{}\t{}\t{}", when, rd, q, rattr)?;
+        }
+        wf.write().await.write_all(&buf).await?;
+        Ok(())
+    }
     async fn out_upd_path<T: BgpRIBKey + Display>(
         &self,
         ribtype: &'static str,
@@ -113,6 +130,22 @@ impl TextWriter {
         let mut buf = bytes::BytesMut::new();
         for q in v.iter() {
             writeln!(&mut buf, "{}\t-\t{}", when, q)?;
+        }
+        wf.write().await.write_all(&buf).await?;
+        Ok(())
+    }
+    async fn out_wdr_rd<T: BgpRIBKey + Display>(
+        &self,
+        ribtype: &'static str,
+        session: BgpSessionId,
+        when: Timestamp,
+        rd: BgpRD,
+        v: &[T],
+    ) -> anyhow::Result<()> {
+        let wf = self.get_out(ribtype, session).await?;
+        let mut buf = bytes::BytesMut::new();
+        for q in v.iter() {
+            writeln!(&mut buf, "{}\t-\t{}\t{}", when, rd, q)?;
         }
         wf.write().await.write_all(&buf).await?;
         Ok(())
@@ -226,9 +259,31 @@ impl Storage for TextWriter {
                 self.out_upd(BgpRibKind::RIB_FS4U, session, rattr, when, v)
                     .await
             }
+            BgpAddrs::FSV4U(v) => {
+                self.out_upd_rd(
+                    BgpRibKind::RIB_FSV4U,
+                    session,
+                    rattr,
+                    when,
+                    v.0.clone(),
+                    &v.1,
+                )
+                .await
+            }
             BgpAddrs::FS6U(v) => {
                 self.out_upd(BgpRibKind::RIB_FS6U, session, rattr, when, v)
                     .await
+            }
+            BgpAddrs::FSV6U(v) => {
+                self.out_upd_rd(
+                    BgpRibKind::RIB_FSV6U,
+                    session,
+                    rattr,
+                    when,
+                    v.0.clone(),
+                    &v.1,
+                )
+                .await
             }
             BgpAddrs::IPV4UP(v) => {
                 self.out_upd_path(BgpRibKind::RIB_IPV4U, session, rattr, when, v)
@@ -299,7 +354,15 @@ impl Storage for TextWriter {
             BgpAddrs::MVPN(v) => self.out_wdr(BgpRibKind::RIB_MVPN, session, when, v).await,
             BgpAddrs::EVPN(v) => self.out_wdr(BgpRibKind::RIB_EVPN, session, when, v).await,
             BgpAddrs::FS4U(v) => self.out_wdr(BgpRibKind::RIB_FS4U, session, when, v).await,
+            BgpAddrs::FSV4U(v) => {
+                self.out_wdr_rd(BgpRibKind::RIB_FSV4U, session, when, v.0.clone(), &v.1)
+                    .await
+            }
             BgpAddrs::FS6U(v) => self.out_wdr(BgpRibKind::RIB_FS6U, session, when, v).await,
+            BgpAddrs::FSV6U(v) => {
+                self.out_wdr_rd(BgpRibKind::RIB_FSV6U, session, when, v.0.clone(), &v.1)
+                    .await
+            }
             BgpAddrs::IPV4UP(v) => {
                 self.out_wdr_path(BgpRibKind::RIB_IPV4U, session, when, v)
                     .await

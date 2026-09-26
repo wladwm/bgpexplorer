@@ -1,5 +1,5 @@
 use crate::bgpattrs::BgpAttrs;
-use crate::bgprib::{BgpRIBKey, BgpRIBSafi, BgpSessionEntry, ClonableIterator};
+use crate::bgprib::{BgpRIBKey, BgpRIBSafi, BgpSessionEntry, ClonableIterator, FSV4U, FSV6U};
 use crate::clone_iter;
 use crate::ribservice::RibResponseFilter;
 use crate::service::*;
@@ -316,7 +316,8 @@ impl FilterMatchRoute for FS6 {
     fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
         match fi {
             FilterItem::V6(ref n) => Some(
-                BgpAddrV6::new(n.range_first(), n.prefixlen).into()..=BgpAddrV6::new(n.range_last(), 128).into(),
+                BgpAddrV6::new(n.range_first(), n.prefixlen).into()
+                    ..=BgpAddrV6::new(n.range_last(), 128).into(),
             ),
             _ => None,
         }
@@ -327,6 +328,112 @@ impl FilterMatchRoute for FS6 {
                 BgpAddrV6::new(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0).into()
                     ..=BgpAddrV6::new(n.range_last(), 128).into(),
             ),
+            _ => None,
+        }
+    }
+}
+impl FilterMatchRoute for FSV4U {
+    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        self.fs.match_item(fi)
+    }
+    fn match_super_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        self.fs.match_super_item(fi)
+    }
+    fn len(&self) -> usize {
+        self.fs.len()
+    }
+    fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
+        match fi {
+            /*
+            FilterItem::RD(rd) => Some(
+                FSV4U::new(WithRd::<BgpAddrV4>::new(
+                    rd.clone(),
+                    BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0),
+                ))
+                    ..=FSV4U::new(WithRd::<BgpAddrV4>::new(
+                        rd.clone(),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(255, 255, 255, 255), 32),
+                    )),
+            ),
+            FilterItem::V4(ref n) => Some(
+                BgpAddrV4::new(n.range_first(), n.prefixlen).into()
+                    ..=BgpAddrV4::new(n.range_last(), 32).into(),
+            ),
+            */
+            _ => None,
+        }
+    }
+    fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
+        match fi {
+            /*
+            FilterItem::RD(rd) => Some(
+                FSV4U::new(WithRd::<BgpAddrV4>::new(
+                    rd.clone(),
+                    BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0),
+                ))
+                    ..=FSV4U::new(WithRd::<BgpAddrV4>::new(
+                        rd.clone(),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(255, 255, 255, 255), 32),
+                    )),
+            ),
+            FilterItem::V4(ref n) => Some(
+                BgpAddrV6::new(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0).into()
+                    ..=BgpAddrV6::new(n.range_last(), 128).into(),
+            ),
+            */
+            _ => None,
+        }
+    }
+}
+impl FilterMatchRoute for FSV6U {
+    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        self.fs.match_item(fi)
+    }
+    fn match_super_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        self.fs.match_super_item(fi)
+    }
+    fn len(&self) -> usize {
+        self.fs.len()
+    }
+    fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
+        match fi {
+            /*
+            FilterItem::RD(rd) => Some(
+                FSV4U::new(WithRd::<BgpAddrV4>::new(
+                    rd.clone(),
+                    BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0),
+                ))
+                    ..=FSV4U::new(WithRd::<BgpAddrV4>::new(
+                        rd.clone(),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(255, 255, 255, 255), 32),
+                    )),
+            ),
+            FilterItem::V4(ref n) => Some(
+                BgpAddrV4::new(n.range_first(), n.prefixlen).into()
+                    ..=BgpAddrV4::new(n.range_last(), 32).into(),
+            ),
+            */
+            _ => None,
+        }
+    }
+    fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
+        match fi {
+            /*
+            FilterItem::RD(rd) => Some(
+                FSV4U::new(WithRd::<BgpAddrV4>::new(
+                    rd.clone(),
+                    BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0),
+                ))
+                    ..=FSV4U::new(WithRd::<BgpAddrV4>::new(
+                        rd.clone(),
+                        BgpAddrV4::new(std::net::Ipv4Addr::new(255, 255, 255, 255), 32),
+                    )),
+            ),
+            FilterItem::V4(ref n) => Some(
+                BgpAddrV6::new(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0).into()
+                    ..=BgpAddrV6::new(n.range_last(), 128).into(),
+            ),
+            */
             _ => None,
         }
     }
@@ -671,7 +778,7 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
                                     pitr.1
                                         .items
                                         .iter()
-                                        .filter(|hr| self.filter.respflt.filter_ah(hr.0, hr.1))
+                                        .filter(|hr| self.filter.respflt.filter_ah(&hr.0, &hr.1))
                                         .skip(
                                             if pitr.1.items.len() > self.filter.respflt.maxdepth {
                                                 pitr.1.items.len() - self.filter.respflt.maxdepth
@@ -742,7 +849,7 @@ impl<'a, 'b, T: FilterMatchRoute + BgpRIBKey> std::iter::Iterator
                                     pitr.1
                                         .items
                                         .iter()
-                                        .filter(|hr| self.filter.respflt.filter_ah(hr.0, hr.1))
+                                        .filter(|hr| self.filter.respflt.filter_ah(&hr.0, &hr.1))
                                         .skip(
                                             if pitr.1.items.len() > self.filter.respflt.maxdepth {
                                                 pitr.1.items.len() - self.filter.respflt.maxdepth
@@ -775,6 +882,9 @@ impl Default for RouteFilter {
 impl RouteFilter {
     pub fn new() -> RouteFilter {
         RouteFilter { terms: Vec::new() }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty()
     }
     pub fn parse(&mut self, st: &str) {
         for s in st.split(' ') {

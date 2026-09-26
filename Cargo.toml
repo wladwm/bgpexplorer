@@ -1,6 +1,6 @@
 [package]
 name = "bgpexplorer"
-version = "0.4.1"
+version = "0.5.0"
 authors = ["Vladimir Melnikov <wlad.w.m@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -13,13 +13,16 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["whoisreq"]
+default = []
 clickhouse = ["klickhouse","parking_lot","tokio-stream"]
 mysql = ["mysql_async"]
 whoisreq = ["whois-rust","sled"]
+dnsreq = ["dnssector","sled"]
+rusty-alloc = ["dep:rusty_alloc-api"]
+jemalloc = ["dep:tikv-jemallocator"]
 
 [dependencies]
-zettabgp = { version = "0.4.1", features = ["serde"] }
+zettabgp = { version = "0.5.0", features = ["serialization"] }
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-util = { version = "0.7.12", features = ["full"] }
 tokio-stream = { version="0", optional = true }
@@ -37,7 +40,7 @@ lazy_static = "1.5.0"
 regex = "1.10.6"
 url = "2.3.1"
 sled = { version = "0.34.7", optional = true }
-dnssector = { version="0.2.13" }
+dnssector = { version="0.2.13", optional = true }
 whois-rust =  { version = "1.6.0", features= ["tokio"], optional = true  }
 ciborium = { version = "0.2.2" }
 ciborium-io = "0.2.2"
@@ -48,6 +51,8 @@ anyhow = "1.0.102"
 klickhouse = { version = "0.15.2", features=["bb8"], optional = true }
 mysql_async = { version = "0.33", optional = true }
 parking_lot = { version = "0", optional = true }
+rusty_alloc-api = { version = "2.1", optional = true }
+tikv-jemallocator = { version = "0.5", optional = true }
 
 [profile.release]
 opt-level = 3

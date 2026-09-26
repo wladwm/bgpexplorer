@@ -30,7 +30,7 @@ pub struct BgpAttrs {
     pub extcomms: Arc<BgpExtCommunityList>,
     pub med: Option<u32>,
     pub localpref: Option<u32>,
-    pub atomicaggregate: Option<std::net::IpAddr>,
+    pub atomicaggregate: Option<std::net::Ipv4Addr>,
     pub aggregatoras: Option<BgpAggregatorAS>,
     pub originator: Option<std::net::IpAddr>,
     pub clusterlist: Option<Arc<BgpClusterList>>,

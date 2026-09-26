@@ -39,7 +39,9 @@ const KEY_L2VPLS: &'static str = "l2vpls";
 const KEY_MVPN: &'static str = "mvpn";
 const KEY_EVPN: &'static str = "evpn";
 const KEY_FS4U: &'static str = "fs4u";
+const KEY_FSV4U: &'static str = "fsv4u";
 const KEY_FS6U: &'static str = "fs6u";
+const KEY_FSV6U: &'static str = "fsv6u";
 const KEY_IPV4MDT: &'static str = "ipv4mdt";
 const KEY_IPV6MDT: &'static str = "ipv6mdt";
 
@@ -109,7 +111,8 @@ impl RibResponseFilter {
         if let Some(cb) = self.changed_before.as_ref() {
             if bp
                 .items
-                .range(..*cb)
+                .iter()
+                .filter(|v| v.0 < *cb)
                 .find(|(ts, ba)| self.filter_ah(ts, ba))
                 .is_none()
             {
@@ -119,7 +122,8 @@ impl RibResponseFilter {
         if let Some(ca) = self.changed_after.as_ref() {
             if bp
                 .items
-                .range(*ca..)
+                .iter()
+                .filter(|v| v.0 > *ca)
                 .find(|(ts, ba)| self.filter_ah(ts, ba))
                 .is_none()
             {
@@ -240,6 +244,10 @@ impl BgpRIBts {
             })
             .unwrap()
     }
+    pub async fn on_session_down(&self, sessionid: BgpSessionId) {
+        let now = Timestamp::now();
+        self.rib.write().await.on_session_down(now, sessionid);
+    }
     pub async fn say_statistics(&self) -> Result<Response<Body>, hyper::http::Error> {
         let rib = match timeout(self.locktimeout, self.rib.read()).await {
             Ok(r) => r,
@@ -274,7 +282,9 @@ impl BgpRIBts {
         m.insert(KEY_MVPN, rib.mvpn.len() as u64);
         m.insert(KEY_EVPN, rib.evpn.len() as u64);
         m.insert(KEY_FS4U, rib.fs4u.len() as u64);
+        m.insert(KEY_FSV4U, rib.fsv4u.len() as u64);
         m.insert(KEY_FS6U, rib.fs6u.len() as u64);
+        m.insert(KEY_FSV6U, rib.fsv6u.len() as u64);
         m.insert(KEY_IPV4MDT, rib.ipv4mdt.len() as u64);
         m.insert(KEY_IPV6MDT, rib.ipv6mdt.len() as u64);
         rsp.insert("ribs", m);
@@ -341,7 +351,9 @@ impl BgpRIBts {
             KEY_MVPN => BgpRIBts::jsontabrib(&rib.mvpn, &filter, params),
             KEY_EVPN => BgpRIBts::jsontabrib(&rib.evpn, &filter, params),
             KEY_FS4U => BgpRIBts::jsontabrib(&rib.fs4u, &filter, params),
+            KEY_FSV4U => BgpRIBts::jsontabrib(&rib.fsv4u, &filter, params),
             KEY_FS6U => BgpRIBts::jsontabrib(&rib.fs6u, &filter, params),
+            KEY_FSV6U => BgpRIBts::jsontabrib(&rib.fsv6u, &filter, params),
             KEY_IPV4MDT => BgpRIBts::jsontabrib(&rib.ipv4mdt, &filter, params),
             KEY_IPV6MDT => BgpRIBts::jsontabrib(&rib.ipv6mdt, &filter, params),
             _ => BgpRIBts::jsontabrib(&rib.ipv4u, &filter, params),
@@ -452,7 +464,9 @@ impl BgpRIBts {
             KEY_MVPN => BgpRIBts::csvtabrib(&rib.mvpn, &filter, params, fname),
             KEY_EVPN => BgpRIBts::csvtabrib(&rib.evpn, &filter, params, fname),
             KEY_FS4U => BgpRIBts::csvtabrib(&rib.fs4u, &filter, params, fname),
+            KEY_FSV4U => BgpRIBts::csvtabrib(&rib.fsv4u, &filter, params, fname),
             KEY_FS6U => BgpRIBts::csvtabrib(&rib.fs6u, &filter, params, fname),
+            KEY_FSV6U => BgpRIBts::csvtabrib(&rib.fsv6u, &filter, params, fname),
             KEY_IPV4MDT => BgpRIBts::csvtabrib(&rib.ipv6mdt, &filter, params, fname),
             KEY_IPV6MDT => BgpRIBts::csvtabrib(&rib.ipv6mdt, &filter, params, fname),
             _ => BgpRIBts::csvtabrib(&rib.ipv4u, &filter, params, fname),
