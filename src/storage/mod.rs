@@ -13,7 +13,14 @@ pub mod textfile;
 
 enum StorageItem {
     Update((Timestamp, BgpSessionId, Arc<BgpAddrs>, Arc<BgpAttrs>)),
-    Withdraw((Timestamp, BgpSessionId, Arc<BgpAddrs>)),
+    Withdraw(
+        (
+            Timestamp,
+            BgpSessionId,
+            Arc<BgpAddrs>,
+            Option<Arc<BgpAttrs>>,
+        ),
+    ),
 }
 pub struct StorageQueue {
     pub storage: Arc<dyn Storage + std::marker::Send + std::marker::Sync + 'static>,
@@ -35,7 +42,7 @@ impl StorageQueue {
                         }
                     }
                     StorageItem::Withdraw(q) => {
-                        if let Err(e) = strg.store_withdraw(q.1, q.0, &q.2).await {
+                        if let Err(e) = strg.store_withdraw(q.1, q.0, &q.2, q.3).await {
                             warn!("storage.store_withdraw error: {:?}", e);
                         }
                     }
@@ -43,6 +50,9 @@ impl StorageQueue {
             }
         });
         StorageQueue { storage, tx }
+    }
+    pub fn is_active(&self) -> bool {
+        self.storage.is_active()
     }
     pub fn store_update(
         &self,
@@ -63,8 +73,17 @@ impl StorageQueue {
             );
         }
     }
-    pub fn store_withdraw(&self, session: BgpSessionId, when: Timestamp, v: Arc<BgpAddrs>) {
-        if let Err(e) = self.tx.try_send(StorageItem::Withdraw((when, session, v))) {
+    pub fn store_withdraw(
+        &self,
+        session: BgpSessionId,
+        when: Timestamp,
+        v: Arc<BgpAddrs>,
+        rattr: Option<Arc<BgpAttrs>>,
+    ) {
+        if let Err(e) = self
+            .tx
+            .try_send(StorageItem::Withdraw((when, session, v, rattr)))
+        {
             error!(
                 "Unable to store withdraw({}/{}) - {:?}",
                 self.tx.capacity(),
@@ -79,6 +98,9 @@ impl StorageQueue {
 pub trait Storage {
     async fn open(&mut self) -> anyhow::Result<()>;
     async fn shutdown(&self) -> anyhow::Result<()>;
+    fn is_active(&self) -> bool {
+        false
+    }
     async fn register_session(
         &self,
         sess: Arc<BgpSessionDesc>,
@@ -96,6 +118,7 @@ pub trait Storage {
         session: BgpSessionId,
         when: Timestamp,
         v: &BgpAddrs,
+        rattr: Option<Arc<BgpAttrs>>,
     ) -> anyhow::Result<()>;
 }
 
@@ -134,6 +157,7 @@ impl Storage for NoStorage {
         _session: BgpSessionId,
         _when: Timestamp,
         _v: &BgpAddrs,
+        _rattr: Option<Arc<BgpAttrs>>,
     ) -> anyhow::Result<()> {
         Ok(())
     }

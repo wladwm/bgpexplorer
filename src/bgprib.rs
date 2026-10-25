@@ -340,72 +340,25 @@ impl BgpRIBKey for BgpFlowSpec<BgpAddrV4> {
         self.to_string()
     }
 }
+impl BgpRIBKey for BgpFlowSpecRD<BgpAddrV4> {
+    type Inner = Infallible;
+    fn inner_string(&self) -> String {
+        self.to_string()
+    }
+}
 impl BgpRIBKey for BgpFlowSpec<FS6> {
     type Inner = Infallible;
     fn inner_string(&self) -> String {
         self.to_string()
     }
 }
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub struct FSV4U {
-    pub rd: BgpRD,
-    pub fs: BgpFlowSpec<BgpAddrV4>,
-}
-impl FSV4U {
-    pub fn new(rd: BgpRD, fs: BgpFlowSpec<BgpAddrV4>) -> FSV4U {
-        FSV4U { rd, fs }
-    }
-}
-impl std::fmt::Display for FSV4U {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "<{}>({})", self.rd, self.fs)
-    }
-}
-impl BgpRIBKey for FSV4U {
-    type Inner = BgpFlowSpec<BgpAddrV4>;
-    fn getlabels(&self) -> Option<MplsLabels> {
-        None
-    }
-    fn getrd(&self) -> Option<BgpRD> {
-        Some(self.rd.clone())
-    }
-    fn getinner(&self) -> Option<Self::Inner> {
-        Some(self.fs.clone())
-    }
+impl BgpRIBKey for BgpFlowSpecRD<FS6> {
+    type Inner = Infallible;
     fn inner_string(&self) -> String {
-        self.fs.to_string()
+        self.to_string()
     }
 }
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub struct FSV6U {
-    pub rd: BgpRD,
-    pub fs: BgpFlowSpec<FS6>,
-}
-impl FSV6U {
-    pub fn new(rd: BgpRD, fs: BgpFlowSpec<FS6>) -> FSV6U {
-        FSV6U { rd, fs }
-    }
-}
-impl std::fmt::Display for FSV6U {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "<{}>({})", self.rd, self.fs)
-    }
-}
-impl BgpRIBKey for FSV6U {
-    type Inner = BgpFlowSpec<FS6>;
-    fn getlabels(&self) -> Option<MplsLabels> {
-        None
-    }
-    fn getrd(&self) -> Option<BgpRD> {
-        Some(self.rd.clone())
-    }
-    fn getinner(&self) -> Option<Self::Inner> {
-        Some(self.fs.clone())
-    }
-    fn inner_string(&self) -> String {
-        self.fs.to_string()
-    }
-}
+
 pub struct BgpRIBIndex<K: Eq + Ord + Clone, T: BgpRIBKey> {
     pub idx: BTreeMap<K, BTreeSet<T>>,
 }
@@ -828,20 +781,33 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
         }
         ret
     }
-    pub fn handle_withdraws_afi(&mut self, sessionid: BgpSessionId, v: &[T]) {
+    pub fn handle_withdraws_afi(
+        &mut self,
+        sessionid: BgpSessionId,
+        v: &[T],
+    ) -> Option<Vec<Option<Arc<BgpAttrs>>>> {
         if v.is_empty() {
-            return;
+            return None;
         }
+        let mut ret = Vec::new();
         let now = Timestamp::now();
         for i in v.iter() {
             //TODO: indexes cleanup
             match self.items.get_mut(i) {
-                None => {}
+                None => {
+                    ret.push(None);
+                }
                 Some(hist) => {
                     hist.shrink_hist(self.log_size - 1);
                     let lrec = match hist.get_last_attr(sessionid, 0) {
-                        None => continue,
-                        Some(x) => x,
+                        None => {
+                            ret.push(None);
+                            continue;
+                        }
+                        Some(x) => {
+                            ret.push(Some(x.attrs.clone()));
+                            x
+                        }
                     };
                     match self.history_mode {
                         HistoryChangeMode::EveryUpdate => {
@@ -864,6 +830,111 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
                         }
                     };
                 }
+            }
+        }
+        Some(ret)
+    }
+    pub fn handle_withdraws_afi_pathid(
+        &mut self,
+        session: BgpSessionId,
+        v: &[WithPathId<T>],
+    ) -> Option<Vec<Option<Arc<BgpAttrs>>>> {
+        if v.is_empty() {
+            return None;
+        }
+        let mut ret = Vec::new();
+        let now = Timestamp::now();
+        for i in v.iter() {
+            //TODO: indexes cleanup
+            match self.items.get_mut(&i.nlri) {
+                None => {
+                    ret.push(None);
+                }
+                Some(hist) => {
+                    hist.shrink_hist(self.log_size - 1);
+                    let lrec = match hist.get_last_attr(session, i.pathid) {
+                        None => {
+                            ret.push(None);
+                            continue;
+                        }
+                        Some(x) => {
+                            ret.push(Some(x.attrs.clone()));
+                            x
+                        }
+                    };
+                    match self.history_mode {
+                        HistoryChangeMode::EveryUpdate => {
+                            hist.insert(
+                                session,
+                                i.pathid,
+                                now,
+                                BgpAttrEntry::new(false, lrec.attrs.clone(), i.nlri.getlabels()),
+                            );
+                        }
+                        HistoryChangeMode::OnlyDiffer => {
+                            if lrec.active {
+                                hist.insert(
+                                    session,
+                                    i.pathid,
+                                    now,
+                                    BgpAttrEntry::new(
+                                        false,
+                                        lrec.attrs.clone(),
+                                        i.nlri.getlabels(),
+                                    ),
+                                );
+                            }
+                        }
+                    };
+                }
+            }
+        }
+        //ret.shrink_to_fit();
+        Some(ret)
+    }
+    pub fn store_withdraw<F: FnMut(&mut BgpAddrs, &T)>(
+        &self,
+        queue: &StorageQueue,
+        session: BgpSessionId,
+        when: Timestamp,
+        v: &[T],
+        attrs: &[Option<Arc<BgpAttrs>>],
+        mut fadd: F,
+    ) {
+        let mut prv: Option<Arc<BgpAttrs>> = None;
+        let mut prva = BgpAddrs::None;
+        for q in v.iter().zip(attrs.iter()) {
+            if prv == *q.1 {
+                fadd(&mut prva, q.0);
+            } else {
+                if prva != BgpAddrs::None {
+                    queue.store_withdraw(session, when, Arc::new(prva), prv);
+                }
+                prva = BgpAddrs::None;
+                prv = None;
+            }
+        }
+    }
+    pub fn store_withdraw_path<F: FnMut(&mut BgpAddrs, &WithPathId<T>)>(
+        &self,
+        queue: &StorageQueue,
+        session: BgpSessionId,
+        when: Timestamp,
+        v: &[WithPathId<T>],
+        attrs: &[Option<Arc<BgpAttrs>>],
+        mut fadd: F,
+    ) {
+        let mut prv: Option<Arc<BgpAttrs>> = None;
+        let mut prva = BgpAddrs::None;
+        for q in v.iter().zip(attrs.iter()) {
+            if prv == *q.1 {
+                fadd(&mut prva, q.0);
+            } else {
+                if prva != BgpAddrs::None {
+                    queue.store_withdraw(session, when, Arc::new(prva), prv);
+                }
+                prva = BgpAddrs::None;
+                prv = None;
             }
         }
     }
@@ -928,49 +999,7 @@ impl<T: BgpRIBKey> BgpRIBSafi<T> {
             };
         }
     }
-    pub fn handle_withdraws_afi_pathid(&mut self, session: BgpSessionId, v: &[WithPathId<T>]) {
-        if v.is_empty() {
-            return;
-        }
-        let now = Timestamp::now();
-        for i in v.iter() {
-            //TODO: indexes cleanup
-            match self.items.get_mut(&i.nlri) {
-                None => {}
-                Some(hist) => {
-                    hist.shrink_hist(self.log_size - 1);
-                    let lrec = match hist.get_last_attr(session, i.pathid) {
-                        None => continue,
-                        Some(x) => x,
-                    };
-                    match self.history_mode {
-                        HistoryChangeMode::EveryUpdate => {
-                            hist.insert(
-                                session,
-                                i.pathid,
-                                now,
-                                BgpAttrEntry::new(false, lrec.attrs.clone(), i.nlri.getlabels()),
-                            );
-                        }
-                        HistoryChangeMode::OnlyDiffer => {
-                            if lrec.active {
-                                hist.insert(
-                                    session,
-                                    i.pathid,
-                                    now,
-                                    BgpAttrEntry::new(
-                                        false,
-                                        lrec.attrs.clone(),
-                                        i.nlri.getlabels(),
-                                    ),
-                                );
-                            }
-                        }
-                    };
-                }
-            }
-        }
-    }
+
     pub fn handle_updates_afi_pathid(
         &mut self,
         session: BgpSessionId,
@@ -1064,9 +1093,9 @@ pub struct BgpRIB {
     pub mvpn: BgpRIBSafi<BgpMVPN>,
     pub evpn: BgpRIBSafi<BgpEVPN>,
     pub fs4u: BgpRIBSafi<BgpFlowSpec<BgpAddrV4>>,
-    pub fsv4u: BgpRIBSafi<FSV4U>,
+    pub fsv4u: BgpRIBSafi<BgpFlowSpecRD<BgpAddrV4>>,
     pub fs6u: BgpRIBSafi<BgpFlowSpec<FS6>>,
-    pub fsv6u: BgpRIBSafi<FSV6U>,
+    pub fsv6u: BgpRIBSafi<BgpFlowSpecRD<FS6>>,
     pub ipv4mdt: BgpRIBSafi<WithRd<BgpMdtV4>>,
     pub ipv6mdt: BgpRIBSafi<WithRd<BgpMdtV6>>,
     pub cnt_updates: u64,
@@ -1305,7 +1334,7 @@ impl BgpRIB {
         Ok(rib)
     }
     pub fn handle_withdraws(&mut self, session: BgpSessionId, withdraws: Arc<BgpAddrs>) {
-        match withdraws.as_ref() {
+        let attrs = match withdraws.as_ref() {
             BgpAddrs::IPV4U(v) => self.ipv4u.handle_withdraws_afi(session, v),
             BgpAddrs::IPV4M(v) => self.ipv4m.handle_withdraws_afi(session, v),
             BgpAddrs::IPV4LU(v) => self.ipv4lu.handle_withdraws_afi(session, v),
@@ -1319,21 +1348,9 @@ impl BgpRIB {
             BgpAddrs::MVPN(v) => self.mvpn.handle_withdraws_afi(session, v),
             BgpAddrs::EVPN(v) => self.evpn.handle_withdraws_afi(session, v),
             BgpAddrs::FS4U(v) => self.fs4u.handle_withdraws_afi(session, v),
-            BgpAddrs::FSV4U(q) => {
-                let v: Vec<_> =
-                    q.1.iter()
-                        .map(|x| FSV4U::new(q.0.clone(), x.clone()))
-                        .collect();
-                self.fsv4u.handle_withdraws_afi(session, &v)
-            }
+            BgpAddrs::FSV4U(v) => self.fsv4u.handle_withdraws_afi(session, v),
             BgpAddrs::FS6U(v) => self.fs6u.handle_withdraws_afi(session, v),
-            BgpAddrs::FSV6U(q) => {
-                let v: Vec<_> =
-                    q.1.iter()
-                        .map(|x| FSV6U::new(q.0.clone(), x.clone()))
-                        .collect();
-                self.fsv6u.handle_withdraws_afi(session, &v)
-            }
+            BgpAddrs::FSV6U(v) => self.fsv6u.handle_withdraws_afi(session, v),
             BgpAddrs::IPV4UP(v) => self.ipv4u.handle_withdraws_afi_pathid(session, v),
             BgpAddrs::IPV4MP(v) => self.ipv4m.handle_withdraws_afi_pathid(session, v),
             BgpAddrs::IPV4LUP(v) => self.ipv4lu.handle_withdraws_afi_pathid(session, v),
@@ -1346,8 +1363,412 @@ impl BgpRIB {
             BgpAddrs::VPNV6MP(v) => self.vpnv6m.handle_withdraws_afi_pathid(session, v),
             BgpAddrs::IPV4MDT(v) => self.ipv4mdt.handle_withdraws_afi(session, v),
             BgpAddrs::IPV6MDT(v) => self.ipv6mdt.handle_withdraws_afi(session, v),
-            _ => {}
+            _ => None,
         };
+        if self.storage.is_active() {
+            let now = Timestamp::now();
+            if withdraws.len() < 2 {
+                self.storage.store_withdraw(
+                    session,
+                    now,
+                    withdraws.clone(),
+                    attrs
+                        .map(|v| v.iter().find(|q| q.is_some()).map(|q| q.clone().unwrap()))
+                        .flatten(),
+                );
+            } else {
+                if let Some(atr) = attrs {
+                    match withdraws.as_ref() {
+                        BgpAddrs::IPV4U(v) => self.ipv4u.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV4U(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV4U(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV4M(v) => self.ipv4m.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV4M(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV4M(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV4LU(v) => self.ipv4lu.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV4LU(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV4LU(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::VPNV4U(v) => self.vpnv4u.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::VPNV4U(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::VPNV4U(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::VPNV4M(v) => self.vpnv4m.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::VPNV4M(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::VPNV4M(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV6U(v) => self.ipv6u.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV6U(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV6U(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV6LU(v) => self.ipv6lu.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV6LU(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV6LU(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::VPNV6U(v) => self.vpnv6u.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::VPNV6U(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::VPNV6U(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::VPNV6M(v) => self.vpnv6m.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::VPNV6M(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::VPNV6M(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::L2VPLS(v) => self.l2vpls.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::L2VPLS(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::L2VPLS(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::MVPN(v) => self.mvpn.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::MVPN(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::MVPN(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::EVPN(v) => self.evpn.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::EVPN(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::EVPN(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::FS4U(v) => self.fs4u.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::FS4U(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::FS4U(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::FSV4U(v) => self.fsv4u.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::FSV4U(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::FSV4U(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::FS6U(v) => self.fs6u.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::FS6U(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::FS6U(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::FSV6U(v) => self.fsv6u.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::FSV6U(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::FSV6U(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV4UP(v) => self.ipv4u.store_withdraw_path(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV4UP(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV4UP(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV4MP(v) => self.ipv4m.store_withdraw_path(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV4MP(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV4MP(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV4LUP(v) => self.ipv4lu.store_withdraw_path(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV4LUP(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV4LUP(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::VPNV4UP(v) => self.vpnv4u.store_withdraw_path(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::VPNV4UP(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::VPNV4UP(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::VPNV4MP(v) => self.vpnv4m.store_withdraw_path(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::VPNV4MP(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::VPNV4MP(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV6UP(v) => self.ipv6u.store_withdraw_path(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV6UP(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV6UP(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV6LUP(v) => self.ipv6lu.store_withdraw_path(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV6LUP(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV6LUP(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::VPNV6UP(v) => self.vpnv6u.store_withdraw_path(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::VPNV6UP(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::VPNV6UP(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::VPNV6MP(v) => self.vpnv6m.store_withdraw_path(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::VPNV6MP(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::VPNV6MP(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV4MDT(v) => self.ipv4mdt.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV4MDT(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV4MDT(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        BgpAddrs::IPV6MDT(v) => self.ipv6mdt.store_withdraw(
+                            &self.storage,
+                            session,
+                            now,
+                            v,
+                            &atr,
+                            |a, i| {
+                                if let BgpAddrs::IPV6MDT(v) = a {
+                                    v.push(i.clone());
+                                } else {
+                                    *a = BgpAddrs::IPV6MDT(vec![i.clone()])
+                                }
+                            },
+                        ),
+                        _ => {
+                            self.storage.store_withdraw(
+                                session,
+                                Timestamp::now(),
+                                withdraws.clone(),
+                                None,
+                            );
+                        }
+                    };
+                }
+            }
+        }
         if self.events.receiver_count() > 0 {
             if let Err(e) = self.events.send(BgpEvent::Withdraw(session, withdraws)) {
                 warn!("Publish withdraw event error: {}", e);
@@ -1360,6 +1781,10 @@ impl BgpRIB {
         rattr: Arc<BgpAttrs>,
         updates: Arc<BgpAddrs>,
     ) {
+        if self.storage.is_active() {
+            self.storage
+                .store_update(session, rattr.clone(), Timestamp::now(), updates.clone());
+        }
         let ra = rattr.clone();
         match updates.as_ref() {
             BgpAddrs::IPV4U(v) => self.ipv4u.handle_updates_afi(session, v, rattr),
@@ -1375,21 +1800,9 @@ impl BgpRIB {
             BgpAddrs::MVPN(v) => self.mvpn.handle_updates_afi(session, v, rattr),
             BgpAddrs::EVPN(v) => self.evpn.handle_updates_afi(session, v, rattr),
             BgpAddrs::FS4U(v) => self.fs4u.handle_updates_afi(session, v, rattr),
-            BgpAddrs::FSV4U(q) => {
-                let v: Vec<_> =
-                    q.1.iter()
-                        .map(|x| FSV4U::new(q.0.clone(), x.clone()))
-                        .collect();
-                self.fsv4u.handle_updates_afi(session, &v, rattr)
-            }
+            BgpAddrs::FSV4U(v) => self.fsv4u.handle_updates_afi(session, v, rattr),
             BgpAddrs::FS6U(v) => self.fs6u.handle_updates_afi(session, v, rattr),
-            BgpAddrs::FSV6U(q) => {
-                let v: Vec<_> =
-                    q.1.iter()
-                        .map(|x| FSV6U::new(q.0.clone(), x.clone()))
-                        .collect();
-                self.fsv6u.handle_updates_afi(session, &v, rattr)
-            }
+            BgpAddrs::FSV6U(v) => self.fsv6u.handle_updates_afi(session, v, rattr),
             BgpAddrs::IPV4UP(v) => self.ipv4u.handle_updates_afi_pathid(session, v, rattr),
             BgpAddrs::IPV4MP(v) => self.ipv4m.handle_updates_afi_pathid(session, v, rattr),
             BgpAddrs::IPV4LUP(v) => self.ipv4lu.handle_updates_afi_pathid(session, v, rattr),
@@ -1518,12 +1931,8 @@ impl BgpRIB {
         let mut withdraws_count: usize = upd.withdraws.len();
         let withdraws = Arc::new(upd.withdraws);
         let updates = Arc::new(upd.updates);
-        self.handle_withdraws(sessionid, withdraws.clone());
-        self.handle_updates(sessionid, rattr.clone(), updates.clone());
-        let now = Timestamp::now();
-        self.storage.store_withdraw(sessionid, now, withdraws);
-        self.storage
-            .store_update(sessionid, rattr.clone(), now, updates);
+        self.handle_withdraws(sessionid, withdraws);
+        self.handle_updates(sessionid, rattr.clone(), updates);
         for i in upd.attrs.into_iter() {
             match i {
                 BgpAttrItem::MPUpdates(n) => {
@@ -1536,14 +1945,11 @@ impl BgpRIB {
                     updates_count += n.addrs.len();
                     let updates = Arc::new(n.addrs);
                     self.handle_updates(sessionid, cattr.clone(), updates.clone());
-                    self.storage
-                        .store_update(sessionid, rattr.clone(), now, updates);
                 }
                 BgpAttrItem::MPWithdraws(n) => {
                     withdraws_count += n.addrs.len();
                     let withdraws = Arc::new(n.addrs);
                     self.handle_withdraws(sessionid, withdraws.clone());
-                    self.storage.store_withdraw(sessionid, now, withdraws);
                 }
                 _ => {}
             }

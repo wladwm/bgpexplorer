@@ -269,6 +269,7 @@ impl<'a, H: BgpUpdateHandler> BgpPeer<'a, H> {
                         .handle_update(self.sessionid, msgupdate)
                         .await;
                 }
+                _ => {}
             }
         }
         self.update_handler

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_stream::StreamExt;
 use zettabgp::afi::{BgpAddrV4, BgpAddrV6, MplsLabels};
-use zettabgp::prelude::{BgpAddrs, BgpRD, WithPathId};
+use zettabgp::prelude::{BgpAddrs, WithPathId};
 
 #[derive(Clone)]
 pub struct ClickhouseStorageOptions {
@@ -802,7 +802,17 @@ impl ToChField for zettabgp::afi::BgpFlowSpec<BgpAddrV4> {
         klickhouse::Value::string(self.to_string())
     }
 }
+impl ToChField for zettabgp::afi::BgpFlowSpecRD<BgpAddrV4> {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        klickhouse::Value::string(self.to_string())
+    }
+}
 impl ToChField for zettabgp::afi::BgpFlowSpec<zettabgp::afi::FS6> {
+    fn to_ch_value(&self) -> klickhouse::Value {
+        klickhouse::Value::string(self.to_string())
+    }
+}
+impl ToChField for zettabgp::afi::BgpFlowSpecRD<zettabgp::afi::FS6> {
     fn to_ch_value(&self) -> klickhouse::Value {
         klickhouse::Value::string(self.to_string())
     }
@@ -906,15 +916,23 @@ struct RibRowW {
     rd: Option<u64>,
     route: klickhouse::Value,
     pathid: u32,
+    a: Option<Arc<BgpAttrs>>,
 }
 impl RibRowW {
-    fn new<T: ToChField>(t: Timestamp, s: BgpSessionId, k: T, pathid: u32) -> Self {
+    fn new<T: ToChField>(
+        t: Timestamp,
+        s: BgpSessionId,
+        k: T,
+        pathid: u32,
+        a: Option<Arc<BgpAttrs>>,
+    ) -> Self {
         Self {
             t,
             s,
             rd: k.getrd().map(|r| r.to_u64()),
             route: k.to_ch_value(),
             pathid,
+            a,
         }
     }
 }
@@ -953,6 +971,9 @@ impl klickhouse::Row for RibRowW {
         }
         v.push((C_ROUTE.into(), self.route));
         v.push((C_PATHID.into(), klickhouse::Value::UInt32(self.pathid)));
+        if let Some(attr) = self.a.as_ref() {
+            append_attribs(&mut v, attr, type_hints);
+        }
         Ok(v)
     }
 }
@@ -1270,42 +1291,6 @@ impl ClickhouseStorage {
         }
         Ok(())
     }
-    async fn out_upd_rd<T: ToChField + std::marker::Send + std::marker::Sync + 'static>(
-        &self,
-        ribtype: &'static str,
-        session: BgpSessionId,
-        rattr: Arc<BgpAttrs>,
-        when: Timestamp,
-        rd: BgpRD,
-        v: &[T],
-    ) -> anyhow::Result<()> {
-        let rdu = rd.to_u64();
-        let rows: Vec<_> = v
-            .iter()
-            .map(|q| {
-                let mut r = RibRowU::new(when, session, q.clone(), 0, rattr.clone());
-                r.rd = Some(rdu);
-                r
-            })
-            .collect();
-        let ins = self
-            .inserter_updates(ribtype)
-            .await
-            .with_context(|| format!("out_upd inserter_updates {}", ribtype))?;
-        if let Err(e) = ins.send(rows).await {
-            self.check_connected()
-                .await
-                .with_context(|| format!("out_upd check_connected {}", ribtype))?;
-            let ins = self
-                .inserter_updates(ribtype)
-                .await
-                .with_context(|| format!("out_upd inserter_updates double {}", ribtype))?;
-            if ins.send(e.0).await.is_err() {
-                return Err(anyhow!("Unable to insert rows into {}", ribtype));
-            }
-        }
-        Ok(())
-    }
     async fn out_upd_path<T: ToChField + std::marker::Send + std::marker::Sync + 'static>(
         &self,
         ribtype: &'static str,
@@ -1342,45 +1327,11 @@ impl ClickhouseStorage {
         session: BgpSessionId,
         when: Timestamp,
         v: &[T],
+        rattr: Option<Arc<BgpAttrs>>,
     ) -> anyhow::Result<()> {
         let rows: Vec<_> = v
             .iter()
-            .map(|q| RibRowW::new(when, session, q.clone(), 0))
-            .collect();
-        let ins: Sender<Vec<RibRowW>> = self
-            .inserter_withdraws(ribtype)
-            .await
-            .with_context(|| format!("out_wdr inserter_withdraws {}", ribtype))?;
-        if let Err(e) = ins.send(rows).await {
-            self.check_connected()
-                .await
-                .with_context(|| format!("out_wdr check_connected {}", ribtype))?;
-            let ins = self
-                .inserter_withdraws(ribtype)
-                .await
-                .with_context(|| format!("out_wdr inserter_withdraws double {}", ribtype))?;
-            if ins.send(e.0).await.is_err() {
-                return Err(anyhow!("Unable to insert rows into {}", ribtype));
-            }
-        }
-        Ok(())
-    }
-    async fn out_wdr_rd<T: ToChField + std::marker::Send + std::marker::Sync + 'static>(
-        &self,
-        ribtype: &'static str,
-        session: BgpSessionId,
-        when: Timestamp,
-        rd: BgpRD,
-        v: &[T],
-    ) -> anyhow::Result<()> {
-        let rdu = rd.to_u64();
-        let rows: Vec<_> = v
-            .iter()
-            .map(|q| {
-                let mut r = RibRowW::new(when, session, q.clone(), 0);
-                r.rd = Some(rdu);
-                r
-            })
+            .map(|q| RibRowW::new(when, session, q.clone(), 0, rattr.clone()))
             .collect();
         let ins: Sender<Vec<RibRowW>> = self
             .inserter_withdraws(ribtype)
@@ -1406,10 +1357,11 @@ impl ClickhouseStorage {
         session: BgpSessionId,
         when: Timestamp,
         v: &[WithPathId<T>],
+        rattr: Option<Arc<BgpAttrs>>,
     ) -> anyhow::Result<()> {
         let rows: Vec<_> = v
             .iter()
-            .map(|q| RibRowW::new(when, session, q.nlri.clone(), q.pathid))
+            .map(|q| RibRowW::new(when, session, q.nlri.clone(), q.pathid, rattr.clone()))
             .collect();
         let ins: Sender<Vec<RibRowW>> = self
             .inserter_withdraws(ribtype)
@@ -1502,6 +1454,9 @@ AggAs Tuple(UInt32,IPv4),Originator Nullable(IPv4),ClusterList Array(IPv4)")?;
         }
         Ok(())
     }
+    fn is_active(&self) -> bool {
+        true
+    }
     async fn shutdown(&self) -> anyhow::Result<()> {
         //self.client.close
         Ok(())
@@ -1575,30 +1530,16 @@ AggAs Tuple(UInt32,IPv4),Originator Nullable(IPv4),ClusterList Array(IPv4)")?;
                     .await
             }
             BgpAddrs::FSV4U(v) => {
-                self.out_upd_rd(
-                    BgpRibKind::RIB_FSV4U,
-                    session,
-                    rattr,
-                    when,
-                    v.0.clone(),
-                    &v.1,
-                )
-                .await
+                self.out_upd(BgpRibKind::RIB_FSV4U, session, rattr, when, v)
+                    .await
             }
             BgpAddrs::FS6U(v) => {
                 self.out_upd(BgpRibKind::RIB_FS6U, session, rattr, when, v)
                     .await
             }
             BgpAddrs::FSV6U(v) => {
-                self.out_upd_rd(
-                    BgpRibKind::RIB_FSV6U,
-                    session,
-                    rattr,
-                    when,
-                    v.0.clone(),
-                    &v.1,
-                )
-                .await
+                self.out_upd(BgpRibKind::RIB_FSV6U, session, rattr, when, v)
+                    .await
             }
             BgpAddrs::IPV4UP(v) => {
                 self.out_upd_path(BgpRibKind::RIB_IPV4U, session, rattr, when, v)
@@ -1653,74 +1594,117 @@ AggAs Tuple(UInt32,IPv4),Originator Nullable(IPv4),ClusterList Array(IPv4)")?;
         session: BgpSessionId,
         when: Timestamp,
         addrs: &BgpAddrs,
+        rattr: Option<Arc<BgpAttrs>>,
     ) -> anyhow::Result<()> {
         use crate::BgpRibKind;
         match addrs {
-            BgpAddrs::IPV4U(v) => self.out_wdr(BgpRibKind::RIB_IPV4U, session, when, v).await,
-            BgpAddrs::IPV4M(v) => self.out_wdr(BgpRibKind::RIB_IPV4M, session, when, v).await,
-            BgpAddrs::IPV4LU(v) => self.out_wdr(BgpRibKind::RIB_IPV4LU, session, when, v).await,
-            BgpAddrs::VPNV4U(v) => self.out_wdr(BgpRibKind::RIB_VPNV4U, session, when, v).await,
-            BgpAddrs::VPNV4M(v) => self.out_wdr(BgpRibKind::RIB_VPNV4M, session, when, v).await,
-            BgpAddrs::IPV6U(v) => self.out_wdr(BgpRibKind::RIB_IPV6U, session, when, v).await,
-            BgpAddrs::IPV6LU(v) => self.out_wdr(BgpRibKind::RIB_IPV6LU, session, when, v).await,
-            BgpAddrs::VPNV6U(v) => self.out_wdr(BgpRibKind::RIB_VPNV6U, session, when, v).await,
-            BgpAddrs::VPNV6M(v) => self.out_wdr(BgpRibKind::RIB_VPNV6M, session, when, v).await,
-            BgpAddrs::L2VPLS(v) => self.out_wdr(BgpRibKind::RIB_L2VPLS, session, when, v).await,
-            BgpAddrs::MVPN(v) => self.out_wdr(BgpRibKind::RIB_MVPN, session, when, v).await,
-            BgpAddrs::EVPN(v) => self.out_wdr(BgpRibKind::RIB_EVPN, session, when, v).await,
-            BgpAddrs::FS4U(v) => self.out_wdr(BgpRibKind::RIB_FS4U, session, when, v).await,
-            BgpAddrs::FSV4U(v) => {
-                self.out_wdr_rd(BgpRibKind::RIB_FS4U, session, when, v.0.clone(), &v.1)
+            BgpAddrs::IPV4U(v) => {
+                self.out_wdr(BgpRibKind::RIB_IPV4U, session, when, v, rattr)
                     .await
             }
-            BgpAddrs::FS6U(v) => self.out_wdr(BgpRibKind::RIB_FS6U, session, when, v).await,
+            BgpAddrs::IPV4M(v) => {
+                self.out_wdr(BgpRibKind::RIB_IPV4M, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::IPV4LU(v) => {
+                self.out_wdr(BgpRibKind::RIB_IPV4LU, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::VPNV4U(v) => {
+                self.out_wdr(BgpRibKind::RIB_VPNV4U, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::VPNV4M(v) => {
+                self.out_wdr(BgpRibKind::RIB_VPNV4M, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::IPV6U(v) => {
+                self.out_wdr(BgpRibKind::RIB_IPV6U, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::IPV6LU(v) => {
+                self.out_wdr(BgpRibKind::RIB_IPV6LU, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::VPNV6U(v) => {
+                self.out_wdr(BgpRibKind::RIB_VPNV6U, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::VPNV6M(v) => {
+                self.out_wdr(BgpRibKind::RIB_VPNV6M, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::L2VPLS(v) => {
+                self.out_wdr(BgpRibKind::RIB_L2VPLS, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::MVPN(v) => {
+                self.out_wdr(BgpRibKind::RIB_MVPN, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::EVPN(v) => {
+                self.out_wdr(BgpRibKind::RIB_EVPN, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::FS4U(v) => {
+                self.out_wdr(BgpRibKind::RIB_FS4U, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::FSV4U(v) => {
+                self.out_wdr(BgpRibKind::RIB_FS4U, session, when, v, rattr)
+                    .await
+            }
+            BgpAddrs::FS6U(v) => {
+                self.out_wdr(BgpRibKind::RIB_FS6U, session, when, v, rattr)
+                    .await
+            }
             BgpAddrs::FSV6U(v) => {
-                self.out_wdr_rd(BgpRibKind::RIB_FS4U, session, when, v.0.clone(), &v.1)
+                self.out_wdr(BgpRibKind::RIB_FS4U, session, when, v, rattr)
                     .await
             }
             BgpAddrs::IPV4UP(v) => {
-                self.out_wdr_path(BgpRibKind::RIB_IPV4U, session, when, v)
+                self.out_wdr_path(BgpRibKind::RIB_IPV4U, session, when, v, rattr)
                     .await
             }
             BgpAddrs::IPV4MP(v) => {
-                self.out_wdr_path(BgpRibKind::RIB_IPV4M, session, when, v)
+                self.out_wdr_path(BgpRibKind::RIB_IPV4M, session, when, v, rattr)
                     .await
             }
             BgpAddrs::IPV4LUP(v) => {
-                self.out_wdr_path(BgpRibKind::RIB_IPV4LU, session, when, v)
+                self.out_wdr_path(BgpRibKind::RIB_IPV4LU, session, when, v, rattr)
                     .await
             }
             BgpAddrs::VPNV4UP(v) => {
-                self.out_wdr_path(BgpRibKind::RIB_VPNV4U, session, when, v)
+                self.out_wdr_path(BgpRibKind::RIB_VPNV4U, session, when, v, rattr)
                     .await
             }
             BgpAddrs::VPNV4MP(v) => {
-                self.out_wdr_path(BgpRibKind::RIB_VPNV4M, session, when, v)
+                self.out_wdr_path(BgpRibKind::RIB_VPNV4M, session, when, v, rattr)
                     .await
             }
             BgpAddrs::IPV6UP(v) => {
-                self.out_wdr_path(BgpRibKind::RIB_IPV6U, session, when, v)
+                self.out_wdr_path(BgpRibKind::RIB_IPV6U, session, when, v, rattr)
                     .await
             }
             //BgpAddrs::IPV6MP(v) => self.ipv6m.handle_updates_afi_pathid(session, v, rattr),
             BgpAddrs::IPV6LUP(v) => {
-                self.out_wdr_path(BgpRibKind::RIB_IPV6U, session, when, v)
+                self.out_wdr_path(BgpRibKind::RIB_IPV6U, session, when, v, rattr)
                     .await
             }
             BgpAddrs::VPNV6UP(v) => {
-                self.out_wdr_path(BgpRibKind::RIB_VPNV6U, session, when, v)
+                self.out_wdr_path(BgpRibKind::RIB_VPNV6U, session, when, v, rattr)
                     .await
             }
             BgpAddrs::VPNV6MP(v) => {
-                self.out_wdr_path(BgpRibKind::RIB_VPNV6M, session, when, v)
+                self.out_wdr_path(BgpRibKind::RIB_VPNV6M, session, when, v, rattr)
                     .await
             }
             BgpAddrs::IPV4MDT(v) => {
-                self.out_wdr(BgpRibKind::RIB_IPV4MDT, session, when, v)
+                self.out_wdr(BgpRibKind::RIB_IPV4MDT, session, when, v, rattr)
                     .await
             }
             BgpAddrs::IPV6MDT(v) => {
-                self.out_wdr(BgpRibKind::RIB_IPV6MDT, session, when, v)
+                self.out_wdr(BgpRibKind::RIB_IPV6MDT, session, when, v, rattr)
                     .await
             }
             _ => Ok(()),

@@ -417,7 +417,7 @@ fn filter_routes(
             rv.shrink_to_fit();
             return Some(Arc::new(BgpAddrs::FS4U(rv)));
         }
-        BgpAddrs::FSV4U((rd, v)) => {
+        BgpAddrs::FSV4U(v) => {
             let mut rv = Vec::new();
             for r in v.iter() {
                 if filter.match_route(r, &attrs) == FilterItemMatchResult::Yes {
@@ -428,7 +428,7 @@ fn filter_routes(
                 return None;
             };
             rv.shrink_to_fit();
-            return Some(Arc::new(BgpAddrs::FSV4U((rd.clone(), rv))));
+            return Some(Arc::new(BgpAddrs::FSV4U(rv)));
         }
         BgpAddrs::FS6U(v) => {
             let mut rv = Vec::new();
@@ -443,7 +443,7 @@ fn filter_routes(
             rv.shrink_to_fit();
             return Some(Arc::new(BgpAddrs::FS6U(rv)));
         }
-        BgpAddrs::FSV6U((rd, v)) => {
+        BgpAddrs::FSV6U(v) => {
             let mut rv = Vec::new();
             for r in v.iter() {
                 if filter.match_route(r, &attrs) == FilterItemMatchResult::Yes {
@@ -454,7 +454,7 @@ fn filter_routes(
                 return None;
             };
             rv.shrink_to_fit();
-            return Some(Arc::new(BgpAddrs::FSV6U((rd.clone(), rv))));
+            return Some(Arc::new(BgpAddrs::FSV6U(rv)));
         }
     };
     Some(routes)

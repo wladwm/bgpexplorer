@@ -1,5 +1,5 @@
 use crate::bgpattrs::BgpAttrs;
-use crate::bgprib::{BgpRIBKey, BgpRIBSafi, BgpSessionEntry, ClonableIterator, FSV4U, FSV6U};
+use crate::bgprib::{BgpRIBKey, BgpRIBSafi, BgpSessionEntry, ClonableIterator};
 use crate::clone_iter;
 use crate::ribservice::RibResponseFilter;
 use crate::service::*;
@@ -332,112 +332,7 @@ impl FilterMatchRoute for FS6 {
         }
     }
 }
-impl FilterMatchRoute for FSV4U {
-    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        self.fs.match_item(fi)
-    }
-    fn match_super_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        self.fs.match_super_item(fi)
-    }
-    fn len(&self) -> usize {
-        self.fs.len()
-    }
-    fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
-        match fi {
-            /*
-            FilterItem::RD(rd) => Some(
-                FSV4U::new(WithRd::<BgpAddrV4>::new(
-                    rd.clone(),
-                    BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0),
-                ))
-                    ..=FSV4U::new(WithRd::<BgpAddrV4>::new(
-                        rd.clone(),
-                        BgpAddrV4::new(std::net::Ipv4Addr::new(255, 255, 255, 255), 32),
-                    )),
-            ),
-            FilterItem::V4(ref n) => Some(
-                BgpAddrV4::new(n.range_first(), n.prefixlen).into()
-                    ..=BgpAddrV4::new(n.range_last(), 32).into(),
-            ),
-            */
-            _ => None,
-        }
-    }
-    fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
-        match fi {
-            /*
-            FilterItem::RD(rd) => Some(
-                FSV4U::new(WithRd::<BgpAddrV4>::new(
-                    rd.clone(),
-                    BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0),
-                ))
-                    ..=FSV4U::new(WithRd::<BgpAddrV4>::new(
-                        rd.clone(),
-                        BgpAddrV4::new(std::net::Ipv4Addr::new(255, 255, 255, 255), 32),
-                    )),
-            ),
-            FilterItem::V4(ref n) => Some(
-                BgpAddrV6::new(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0).into()
-                    ..=BgpAddrV6::new(n.range_last(), 128).into(),
-            ),
-            */
-            _ => None,
-        }
-    }
-}
-impl FilterMatchRoute for FSV6U {
-    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        self.fs.match_item(fi)
-    }
-    fn match_super_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
-        self.fs.match_super_item(fi)
-    }
-    fn len(&self) -> usize {
-        self.fs.len()
-    }
-    fn get_subnet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
-        match fi {
-            /*
-            FilterItem::RD(rd) => Some(
-                FSV4U::new(WithRd::<BgpAddrV4>::new(
-                    rd.clone(),
-                    BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0),
-                ))
-                    ..=FSV4U::new(WithRd::<BgpAddrV4>::new(
-                        rd.clone(),
-                        BgpAddrV4::new(std::net::Ipv4Addr::new(255, 255, 255, 255), 32),
-                    )),
-            ),
-            FilterItem::V4(ref n) => Some(
-                BgpAddrV4::new(n.range_first(), n.prefixlen).into()
-                    ..=BgpAddrV4::new(n.range_last(), 32).into(),
-            ),
-            */
-            _ => None,
-        }
-    }
-    fn get_supernet_range(fi: &FilterItem) -> Option<RangeInclusive<Self>> {
-        match fi {
-            /*
-            FilterItem::RD(rd) => Some(
-                FSV4U::new(WithRd::<BgpAddrV4>::new(
-                    rd.clone(),
-                    BgpAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 0),
-                ))
-                    ..=FSV4U::new(WithRd::<BgpAddrV4>::new(
-                        rd.clone(),
-                        BgpAddrV4::new(std::net::Ipv4Addr::new(255, 255, 255, 255), 32),
-                    )),
-            ),
-            FilterItem::V4(ref n) => Some(
-                BgpAddrV6::new(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0).into()
-                    ..=BgpAddrV6::new(n.range_last(), 128).into(),
-            ),
-            */
-            _ => None,
-        }
-    }
-}
+
 impl FilterMatchRoute for BgpAddrL2 {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
         match fi {
@@ -588,6 +483,60 @@ impl FilterMatchRoute for BgpMdtV6 {
 }
 impl<T: FilterMatchRoute + FSItem<T>> FilterMatchRoute for BgpFlowSpec<T> {
     fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        let v: Vec<_> = self
+            .items
+            .iter()
+            .map(|x| {
+                use zettabgp::afi::BgpFlowSpecItem::*;
+
+                fn match_fscmpval(
+                    fi: &FilterItem,
+                    vv: &zettabgp::afi::flowspec::FSCmpValOpers,
+                ) -> FilterItemMatchResult {
+                    match fi {
+                        FilterItem::Num(n) => {
+                            if vv.iter().any(|vv| (vv.value as u64) == *n) {
+                                FilterItemMatchResult::Yes
+                            } else {
+                                FilterItemMatchResult::Unknown
+                            }
+                        }
+                        _ => FilterItemMatchResult::Unknown,
+                    }
+                }
+
+                match x {
+                    PrefixDst(t) => t.match_item(fi),
+                    PrefixSrc(t) => t.match_item(fi),
+                    Proto(vv) => match_fscmpval(fi, vv),
+                    PortAny(vv) => match_fscmpval(fi, vv),
+                    PortDst(vv) => match_fscmpval(fi, vv),
+                    PortSrc(vv) => match_fscmpval(fi, vv),
+                    IcmpType(vv) => match_fscmpval(fi, vv),
+                    IcmpCode(vv) => match_fscmpval(fi, vv),
+                    PacketLength(vv) => match_fscmpval(fi, vv),
+                    Dscp(vv) => match_fscmpval(fi, vv),
+                    FlowLabel(vv) => match_fscmpval(fi, vv),
+                    _ => FilterItemMatchResult::Unknown,
+                }
+            })
+            .collect();
+        FilterItemMatchResult::multi(&v)
+    }
+}
+impl<T: FilterMatchRoute + FSItem<T>> FilterMatchRoute for BgpFlowSpecRD<T> {
+    fn match_item(&self, fi: &FilterItem) -> FilterItemMatchResult {
+        if fi.match_rd(&self.rd) == FilterItemMatchResult::No {
+            return FilterItemMatchResult::No;
+        }
+        match fi {
+            FilterItem::RD(rd) => {
+                if self.rd != *rd {
+                    return FilterItemMatchResult::No;
+                }
+            }
+            _ => {}
+        };
         let v: Vec<_> = self
             .items
             .iter()

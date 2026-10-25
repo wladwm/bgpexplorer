@@ -1,6 +1,6 @@
 [package]
 name = "bgpexplorer"
-version = "0.5.0"
+version = "0.5.1"
 authors = ["Vladimir Melnikov <wlad.w.m@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -13,7 +13,7 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = []
+default = ["rusty-alloc"]
 clickhouse = ["klickhouse","parking_lot","tokio-stream"]
 mysql = ["mysql_async"]
 whoisreq = ["whois-rust","sled"]
@@ -22,7 +22,7 @@ rusty-alloc = ["dep:rusty_alloc-api"]
 jemalloc = ["dep:tikv-jemallocator"]
 
 [dependencies]
-zettabgp = { version = "0.5.0", features = ["serialization"] }
+zettabgp = { version = "0.6.0", features = ["serialization"] }
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-util = { version = "0.7.12", features = ["full"] }
 tokio-stream = { version="0", optional = true }

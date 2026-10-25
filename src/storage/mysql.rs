@@ -600,6 +600,9 @@ Med null int,Localpref null int,AtomicAgg null varchar(80),AggAs null varchar(80
         }
         Ok(())
     }
+    fn is_active(&self) -> bool {
+        true
+    }
     async fn shutdown(&self) -> anyhow::Result<()> {
         //self.pool.disconnect()
         Ok(())

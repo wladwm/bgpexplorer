@@ -1,3 +1,6 @@
+### 0.5.1 (2026-10-25)
+* zettabgp 0.6.0 - fixed flowspecs for L3VPN
+
 ### 0.5.0 (2026-09-26)
 * allocators added as features.
 * clickhouse storage schema changed.
